@@ -1,0 +1,9 @@
+[user]
+	email = brennwh@siue.edu
+	name = Charlie Whittleman
+[init]
+	defaultBranch = main
+[push]
+	autoSetupRemote = true
+[commit]
+	gpgsign = false

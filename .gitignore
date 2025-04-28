@@ -1,0 +1,5 @@
+# ignore any stray editor backups, OS cruft, secrets files, etc.
+*~
+.DS_Store
+.stow-local-ignore
+secrets.yml
