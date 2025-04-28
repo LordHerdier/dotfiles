@@ -82,14 +82,40 @@ fi
 
 cd "$DOTDIR"
 
-# Choose which stow sets
+# … after cloning and cd "$DOTDIR" …
+
+# Figure out what to stow
 if [[ $ENV == "SERVER" ]]; then
   STOW_SETS=(bash git omp scripts)
 else
   STOW_SETS=(bash git omp scripts zsh)
 fi
 
-echo ">>> Stowing: ${STOW_SETS[*]}"
+echo ">>> Preparing to stow: ${STOW_SETS[*]}"
+
+# 1. Backup any existing non-symlink targets
+BACKUP_DIR="$HOME/dotfiles_backup_$(date +%Y%m%d%H%M%S)"
+echo ">>> Backing up existing files to $BACKUP_DIR"
+mkdir -p "$BACKUP_DIR"
+for pkg in "${STOW_SETS[@]}"; do
+  pkg_dir="$DOTDIR/$pkg"
+  # find every entry (file or dir) inside the package
+  while IFS= read -r item; do
+    # strip leading "./"
+    rel="${item#./}"
+    target="$HOME/$rel"
+    if [[ -e "$target" && ! -L "$target" ]]; then
+      backup_path="$BACKUP_DIR/$rel"
+      mkdir -p "$(dirname "$backup_path")"
+      echo "  • mv '$target' → '$backup_path'"
+      mv "$target" "$backup_path"
+    fi
+  done < <(cd "$pkg_dir" && find . -mindepth 1)
+done
+
+# 2. Run stow now that conflicts are out of the way
+echo ">>> Stowing…"
 stow "${STOW_SETS[@]}"
 
-echo "✅ All done! Your dotfiles are in place."
+echo "✅ Done! Old files are in $BACKUP_DIR and symlinks are live."
+
