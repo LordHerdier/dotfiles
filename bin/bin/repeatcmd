@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script=$(basename "$0")
+
+usage() {
+  cat <<EOF
+
+Repeat a command at fixed intervals. Ctrl+C to bail out.
+
+Usage:
+  $script [ -h ] INTERVAL_SEC COMMAND [ARGS...]
+
+Options:
+  -h      Show this help and exit
+
+Examples:
+  $script 5 date            # prints the date every 5 seconds
+  $script 10 ping -c 1 host # pings once every 10 seconds
+
+EOF
+  exit 1
+}
+
+# Parse -h
+while getopts ":h" opt; do
+  case $opt in
+    h) usage ;;
+    *) usage ;;
+  esac
+done
+shift $((OPTIND -1))
+
+# Check we’ve got at least 2 args
+(( $# >= 2 )) || usage
+
+interval="$1"; shift
+
+# Validate interval is a positive integer
+if ! [[ $interval =~ ^[1-9][0-9]*$ ]]; then
+  echo "⏱️  Error: Interval must be a positive integer, not '$interval'." >&2
+  exit 2
+fi
+
+# Check command exists
+cmd="$1"
+if ! command -v "$cmd" &>/dev/null; then
+  echo "❌  Oops: '$cmd' not found in your PATH." >&2
+  exit 3
+fi
+
+args=( "$@" )
+
+# Trap Ctrl+C
+trap 'echo -e "\n🙅‍♂️ Interrupted. Exiting."; exit 130' SIGINT
+
+echo "🚀  Running: '${args[*]}' every ${interval}s. (Press Ctrl+C to stop)"
+
+while true; do
+  if ! "${args[@]}"; then
+    rc=$?
+    echo "⚠️  Warning: '${cmd}' exited with code $rc; will retry after ${interval}s."
+  fi
+  sleep "$interval"
+done

@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+import subprocess
+import re
+import sys
+
+def get_local_ips():
+    # run `ip -4 addr show` and grab all IPv4s
+    proc = subprocess.run(['ip', '-4', 'addr', 'show'],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        print("⚠️ Couldn't fetch local IPs:", proc.stderr.strip(), file=sys.stderr)
+        return []
+    # pull out addresses, drop 127.x.x.x
+    ips = re.findall(r'inet (\d+\.\d+\.\d+\.\d+)', proc.stdout)
+    return [ip for ip in ips if not ip.startswith('127.')]
+
+def get_external_ip():
+    # curl with minimal fuss
+    proc = subprocess.run(['curl', '-s', 'ifconfig.io'],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        print("⚠️ Couldn't fetch external IP:", proc.stderr.strip(), file=sys.stderr)
+        return None
+    return proc.stdout.strip()
+
+def main():
+    local = get_local_ips()
+    print("🌐 Local IP addresses:")
+    if local:
+        for ip in local:
+            print("  •", ip)
+    else:
+        print("  (none found – weird!)")
+
+    ext = get_external_ip()
+    print("\n🚀 External IP address:")
+    print("  •", ext or "(failed to retrieve)")
+
+if __name__ == '__main__':
+    main()
