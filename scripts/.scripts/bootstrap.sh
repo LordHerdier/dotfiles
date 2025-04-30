@@ -86,9 +86,9 @@ cd "$DOTDIR"
 
 # Figure out what to stow
 if [[ $ENV == "SERVER" ]]; then
-  STOW_SETS=(bash git omp scripts)
+  STOW_SETS=(bash bin git omp scripts)
 else
-  STOW_SETS=(bash git omp scripts zsh)
+  STOW_SETS=(bash bin git omp scripts zsh)
 fi
 
 echo ">>> Preparing to stow: ${STOW_SETS[*]}"
