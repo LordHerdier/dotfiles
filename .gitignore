@@ -3,3 +3,4 @@
 .DS_Store
 .stow-local-ignore
 secrets.yml
+emacs/.emacs.d/elpa/*
