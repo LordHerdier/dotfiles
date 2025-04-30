@@ -6,11 +6,9 @@
 ###############################################################################
 # Local bin path
 export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/bin:$PATH"
 
-export DOT="$HOME/.dotfiles"
-export PATH="$DOT/bin/bin:$PATH"
-
-# Set your oh‑my‑posh theme (migrated from OMPTHEME in your .bashrc)
+# Set the oh-my-posh theme
 export OMPTHEME=json.custom
 
 # Initialize oh‑my‑posh for zsh (using your custom theme config)
@@ -21,14 +19,18 @@ eval "$(oh-my-posh init zsh --config $HOME/.oh-my-posh/themes/$OMPTHEME.omp.json
 ###############################################################################
 # Set history file and sizes
 HISTFILE=~/.zsh_history
-HISTSIZE=1000
-SAVEHIST=2000
+HISTSIZE=3000
+SAVEHIST=5000
 
 # Append history rather than overwriting it, and share history among sessions
 setopt append_history inc_append_history share_history
 
 # Enable case-insensitive completion
 zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+
+# Ctrl-R fuzzy search through history (need fzf installed)
+bindkey '^R' fzf-history-widget
+autoload -Uz fzf-history-widget
 
 ###############################################################################
 # Aliases, Functions, and Extras
@@ -38,18 +40,10 @@ if [ -f ~/.zsh_aliases ]; then
   source ~/.zsh_aliases
 fi
 
-# Crestron command function (as in your .bashrc)
-function crestroncmd() {
-  local device="$1"
-  shift
-  # Append domain if needed
-  if [[ ! "$device" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$device" != *".id.siue.edu" ]]; then
-    device="${device}.id.siue.edu"
-  fi
-  local cmd="$*"
-  /mnt/c/windows/System32/WindowsPowerShell/v1.0/powershell.exe "C:\Users\brennwh\Documents\scripts\management-scripts\EDK\crestronCmd.ps1" \
-      -Device "$device" -Command "$cmd"
-}
+# Source scriptlets
+if [ -f ~/.zsh_scriptlets ]; then
+  source ~/.zsh_scriptlets
+fi
 
 ###############################################################################
 # Oh My Zsh Framework
@@ -60,15 +54,15 @@ ZSH_THEME=""  # Leave empty to avoid theme conflicts with oh-my-posh
 plugins=(git)
 source $ZSH/oh-my-zsh.sh
 
-# You can add additional customizations below as needed...
-
-
 # Initialize zoxide for zsh
 eval "$(zoxide init zsh --cmd cd)"
 
 # Re-Init OMP Theme
 omp-theme ${OMPTHEME} > /dev/null
 
+###############################################################################
+# Pyenv Setup
+###############################################################################
 export PYENV_ROOT="$HOME/.pyenv"
 [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
 eval "$(pyenv init - bash)"

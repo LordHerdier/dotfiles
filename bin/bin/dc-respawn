@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# dc-respawn — kill, remove & restart one or more Docker Compose services,
+# then tail their logs.
+#
+# Usage: dc-respawn service1 [service2 …]
+set -euo pipefail
+
+# pick the right CLI
+if docker compose version &>/dev/null; then
+  COMPOSE="docker compose"
+elif command -v docker-compose &>/dev/null; then
+  COMPOSE="docker-compose"
+else
+  echo "Error: neither 'docker compose' nor 'docker-compose' found." >&2
+  exit 1
+fi
+
+# require at least one service name
+if [ $# -lt 1 ]; then
+  echo "Usage: $(basename "$0") <service> [service …]" >&2
+  exit 2
+fi
+
+# respawn each service
+for svc in "$@"; do
+  echo "⏳  Respawning '$svc'…"
+  $COMPOSE kill   "$svc" \
+    && $COMPOSE rm -f "$svc" \
+    && $COMPOSE up -d "$svc"
+done
+
+# tail logs
+echo "📝  Attaching logs to: $*"
+$COMPOSE logs -f "$@"

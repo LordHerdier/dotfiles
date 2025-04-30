@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# File: ~/bin/nagios
+# Portable launcher nagios scraper script
+
+set -euo pipefail
+
+# Configurable paths
+SCRAPE_DIR="$HOME/work/scripts/scrapeNagios"
+LOG_ROOT="$HOME/documents/nagios_history"
+
+# Parse flags
+SAVE=false
+for arg in "$@"; do
+  case "$arg" in
+    -s|--save) SAVE=true ;;
+    -h|--help)
+      cat <<EOF
+Usage: nagios [OPTIONS]
+
+Runs the Nagios scraper.
+
+Options:
+  -s, --save    run scraper and save output to \$LOG_ROOT/<timestamp>/nagios.log
+  -h, --help    show this help message
+EOF
+      exit 0
+      ;;
+    *)
+      echo "❓ Unknown option: $arg" >&2
+      echo "Try 'nagios --help'" >&2
+      exit 1
+      ;;
+  esac
+done
+
+# Move into your scraper dir and fire it up
+cd "$SCRAPE_DIR"
+source venv/bin/activate
+
+if $SAVE; then
+  ts=$(date +%Y-%m-%d_%H-%M-%S)
+  dest="$LOG_ROOT/$ts"
+  mkdir -p "$dest"
+  # tee saves to file and echoes to stdout
+  python3 scrapeNagios.py | tee "$dest/nagios.log"
+else
+  python3 scrapeNagios.py
+fi

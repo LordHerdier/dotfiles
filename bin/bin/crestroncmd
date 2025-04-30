@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#
+# crestroncmd — invoke the Crestron PowerShell helper from WSL
+# Usage: crestroncmd <device> <Crestron-style-command…>
+
+# require at least 2 args
+if [ $# -lt 2 ]; then
+  echo "Usage: $(basename "$0") <device> <command…>" >&2
+  exit 1
+fi
+
+device="$1"; shift
+
+# if it's not an IP and not already our domain, append it
+if [[ ! "$device" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$device" != *.id.siue.edu ]]; then
+  device="${device}.id.siue.edu"
+fi
+
+# re-assemble the command
+cmd="$*"
+
+# paths (adjust Windows username or location if needed)
+POWERSHELL="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+SCRIPT="C:\\Users\\brennwh\\Documents\\scripts\\management-scripts\\EDK\\crestronCmd.ps1"
+
+# actually invoke it
+exec "$POWERSHELL" "$SCRIPT" -Device "$device" -Command "$cmd"
