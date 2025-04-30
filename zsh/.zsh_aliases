@@ -1,6 +1,7 @@
 # Usual aliases
 alias c="clear"
 alias ccd="clear && cd ~"
+alias cdc="ccd"
 alias q="exit"
 alias nanosu="$PRIV nano"
 alias visu="$PRIV nvim"
