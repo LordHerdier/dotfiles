@@ -1,4 +1,4 @@
-OMPTHEME=bubblesextra
+OMPTHEME=json.custom
 
 # If not running interactively, don't do anything
 case $- in
