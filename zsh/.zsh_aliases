@@ -23,6 +23,7 @@ alias olivetin='sudo service OliveTin start'
 alias ip='ip -h -c'
 alias pl='please'
 alias reload='source ~/.zshrc && echo "💥 zshrc reloaded!"'
+alias nb='newsboat'
 
 # Quick SSH
 alias proxmox='ssh root@192.168.50.50'
@@ -43,3 +44,6 @@ alias dclf="docker compose logs --follow"
 function gcb() { git checkout -b "$1" }   # new branch
 function gco() { git checkout "$1" }     # switch
 function gpo() { git push origin HEAD }   # push current
+
+# bruh aliases
+alias npm='/usr/bin/npm'
