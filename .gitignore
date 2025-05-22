@@ -4,3 +4,4 @@
 .stow-local-ignore
 secrets.yml
 emacs/.emacs.d/elpa/*
+newsboat/.newsboat/cache.db

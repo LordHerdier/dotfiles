@@ -1,9 +1,14 @@
 [user]
 	email = brennwh@siue.edu
 	name = Charlie Whittleman
+	signingkey = 2818A83E6B0268F1
 [init]
 	defaultBranch = main
 [push]
 	autoSetupRemote = true
 [commit]
-	gpgsign = false
+	gpgSign = true
+[tag]
+	gpgSign = true
+[gpg]
+	program = gpg

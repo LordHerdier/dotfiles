@@ -144,3 +144,4 @@ crestroncmd() {
         -Device "$device" -Command "$cmd"
 }
 
+. "$HOME/.cargo/env"
