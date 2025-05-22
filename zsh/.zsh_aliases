@@ -23,7 +23,11 @@ alias olivetin='sudo service OliveTin start'
 alias ip='ip -h -c'
 alias pl='please'
 alias reload='source ~/.zshrc && echo "💥 zshrc reloaded!"'
-alias nb='newsboat'
+alias nb='newsboat && clear'
+alias md='glow'
+
+# Chatgpt
+alias ch='chatgpt'
 
 # Quick SSH
 alias proxmox='ssh root@192.168.50.50'

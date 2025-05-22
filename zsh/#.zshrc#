@@ -1,4 +1,4 @@
-# Only run for interactive shells
+f# Only run for interactive shells
 [[ -o interactive ]] || return
 
 ###############################################################################
@@ -45,11 +45,6 @@ if [ -f ~/.zsh_scriptlets ]; then
   source ~/.zsh_scriptlets
 fi
 
-# Source secrets
-if [ -f ~/.secrets.zsh ]; then
-    source ~/.secrets.zsh
-fi
-
 ###############################################################################
 # Oh My Zsh Framework
 ###############################################################################
@@ -74,7 +69,3 @@ eval "$(pyenv init - bash)"
 
 # Load pyenv-virtualenv
 eval "$(pyenv virtualenv-init -)"
-
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
