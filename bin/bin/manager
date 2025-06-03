@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#
+# manager — invoke the Crestron Device Manager from WSL
+# Usage: manager
+
+# paths (adjust Windows username or location if needed)
+POWERSHELL="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+SCRIPT="C:\\Users\\brennwh\\Documents\\scripts\\management-scripts\\tui\\run.ps1"
+
+# actually invoke it
+exec "$POWERSHELL" "$SCRIPT"
