@@ -33,6 +33,7 @@ alias ch='chatgpt'
 alias proxmox='ssh root@192.168.50.50'
 alias htpc='ssh charlotte@htpc.local.lorscapa.com'
 alias vc4='ssh brennwh@edw-vc4.isg.siue.edu'
+alias pve2='ssh root@192.168.50.174'
 
 # Docker aliases
 alias dc="docker compose"

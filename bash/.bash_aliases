@@ -1,20 +1,39 @@
 # Usual aliases
 alias c="clear"
+alias ccd="clear && cd ~"
+alias cdc="ccd"
 alias q="exit"
 alias nanosu="$PRIV nano"
 alias visu="$PRIV nvim"
+alias em="emacs -nw"
 alias ls="exa -lgh --group-directories-first"
 alias la="exa -lgha --group-directories-first"
+alias ll="exa -lg --group-directories-first"
 alias apt="nala"
-alias sshos='ssh brennwh@os.cs.siue.edu'
-alias sshfsos='sshfs brennwh@os.cs.siue.edu:/home/brennwh ~/os/'
 alias ..="cd ../"
 alias ...="cd ../.."
 alias ....="cd ../../.."
 alias .....="cd ../../../.."
 alias path="realpath"
 alias ts="tailscale.exe"
+alias files='explorer.exe .'
+alias venvc='python3 -m venv venv'
+alias venva='source venv/bin/activate'
+alias olivetin='sudo service OliveTin start'
+alias ip='ip -h -c'
+alias pl='please'
+alias reload='source ~/.bashrc && echo "💥 bashrc reloaded!"'
+alias nb='newsboat && clear'
+alias md='glow'
+
+# ChatGPT shortcut
+alias ch='chatgpt'
+
+# Quick SSH shortcuts
 alias proxmox='ssh root@192.168.50.50'
+alias htpc='ssh charlotte@htpc.local.lorscapa.com'
+alias vc4='ssh brennwh@edw-vc4.isg.siue.edu'
+alias pve2='ssh root@192.168.50.174'
 
 # Docker aliases
 alias dc="docker compose"
@@ -28,29 +47,18 @@ alias dcp="docker compose pull"
 alias dcl="docker compose logs"
 alias dclf="docker compose logs --follow"
 
-# Nagios devices one-liner
-alias nagios='bash -c "cd /home/charlie/work/scripts/scrapeNagios && source venv/bin/activate && python3 scrapeNagios.py"'
-alias nagios_save='d=$(date +%Y-%m-%d_%H-%M-%S) && mkdir -p ~/documents/nagios_history/"$d" && nagios > ~/documents/nagios_history/"$d"/nagios.log'
-
-# Respawn docker container
-function dc-respawn() {
-    for container in $@; do
-        dc kill $container && dc rm -f $container && dc up -d $container
-    done
-    dc logs -f $@
+# Git-branching helper functions (Bash-style)
+gcb() {
+    git checkout -b "$1"
 }
 
-
-# Change OMP Theme
-omp-theme() {
-  if [ -z "$1" ]; then
-    echo "Usage: omp-theme <theme>"
-    return 1
-  fi
-  local newtheme="$1"
-  # Replace the first line (assumed to be OMPTHEME=...) in ~/.bashrc with the new theme.
-  sed -i "1s/.*/OMPTHEME=${newtheme}/" ~/.bashrc
-  # Reload the updated .bashrc.
-  source ~/.bashrc
+gco() {
+    git checkout "$1"
 }
 
+gpo() {
+    git push origin HEAD
+}
+
+# bruh alias to force your system to use /usr/bin/npm
+alias npm='/usr/bin/npm'

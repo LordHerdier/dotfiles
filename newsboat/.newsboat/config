@@ -1,0 +1,7 @@
+max-items		100
+browser			"firefox --new-tab %u"
+show-read-feeds		no
+urls-source		"freshrss"
+freshrss-url		"https://freshrss.lorscapa.com/api/greader.php"
+freshrss-login		"LordHerdier"
+freshrss-passwordeval "printf '%s\n' \"$FRESHRSS_PASS\""

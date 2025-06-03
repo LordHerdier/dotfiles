@@ -1,0 +1,49 @@
+# ~/.bash_scriptlets
+
+###############################################################################
+# Small helper functions
+###############################################################################
+
+# “please”: rerun the previous command as sudo, because typing sudo twice is so 2020
+# and because I'm too lazy to type sudo !!
+please() {
+  # grab the previous command
+  local last_cmd
+  # fc -ln -1 works in Bash too—sorry, not sorry, Zsh fans
+  last_cmd="$(fc -ln -1)"
+
+  # let ’em know what’s up (emoji because life’s too short)
+  echo "🙏 sudo $last_cmd"
+
+  # actually run it (eval, because…well, it just works)
+  eval "sudo $last_cmd"
+}
+
+
+# “omp-theme”: switch your Oh-My-Posh theme on the fly in Bash
+omp-theme() {
+  if [[ -z "$1" ]]; then
+    echo "Usage: omp-theme <theme>"
+    return 1
+  fi
+
+  local newtheme="$1"
+
+  # Update the OMPTHEME variable in .bashrc instead of .zshrc
+  # (Assumes you have a line like: export OMPTHEME=some.theme in ~/.bashrc)
+  sed -i "s/^export OMPTHEME=.*/export OMPTHEME=${newtheme}/" ~/.bashrc
+
+  # Update the current session’s variable
+  export OMPTHEME="${newtheme}"
+
+  # Reinitialize Oh-My-Posh for Bash (point it at your theme file)
+  eval "$(oh-my-posh init bash --config "$HOME/.oh-my-posh/themes/${newtheme}.omp.json")"
+
+  echo "OMP theme switched to ${newtheme}."
+}
+
+
+# “mkcd”: make a directory (with parents) and cd into it, because mkdir ; cd is so last century
+mkcd() {
+  mkdir -p -- "$1" && cd -P -- "$1"
+}
