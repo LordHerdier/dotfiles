@@ -34,6 +34,7 @@ alias proxmox='ssh root@192.168.50.50'
 alias htpc='ssh charlotte@htpc.local.lorscapa.com'
 alias vc4='ssh brennwh@edw-vc4.isg.siue.edu'
 alias pve2='ssh root@192.168.50.174'
+alias vultr='ssh linuxuser@vultr-1.lorscapa.arpa -p 7894'
 
 # Docker aliases
 alias dc="docker compose"
