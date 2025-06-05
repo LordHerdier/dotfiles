@@ -53,3 +53,6 @@ function gpo() { git push origin HEAD }   # push current
 
 # bruh aliases
 alias npm='/usr/bin/npm'
+
+# oh my posh theming
+#alias omp-theme='source ~/bin/omp-theme'
