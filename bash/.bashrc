@@ -9,6 +9,7 @@ esac
 ###############################################################################
 # Variables
 OMPTHEME=json.custom
+DEFAULT_PACKAGES="oh-my-posh,zoxide,exa,python3"
 
 # set variable identifying the chroot you work in (used in the prompt below)
 if [ -z "${debian_chroot:-}" ] && [ -r /etc/debian_chroot ]; then
@@ -18,6 +19,11 @@ fi
 # Paths
 export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/bin:$PATH"
+
+# If neovim is installed, add it to the path
+if [ -d "/opt/nvim-linux-x86_64/bin" ]; then
+    export PATH="$PATH:/opt/nvim-linux-x86_64/bin"
+fi
 
 # If ruby is installed, add it to the path
 if command -v ruby &> /dev/null; then
