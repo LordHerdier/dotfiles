@@ -107,6 +107,15 @@ map("n", "qf", "<C-w>o", { desc = "Close other windows" })
 -- Disable default s key
 map("n", "s", "<nop>", { desc = "Disabled" })
 
+-- ==================== Visual Mode Movement ====================
+for _, mode in ipairs({ "v", "x", "o" }) do
+  map(mode, "u", "k", opts) -- up
+  map(mode, "e", "j", opts) -- down
+  map(mode, "n", "h", opts) -- left
+  map(mode, "i", "l", opts) -- right
+  map(mode, "gu", "gk", opts) -- wrapped up
+  map(mode, "ge", "gj", opts) -- wrapped down
+end
 -- Window splitting
 --map("n", "su", ":set nosplitbelow<CR>:split<CR>:set splitbelow<CR>", { desc = "Split up" })
 --map("n", "se", ":set splitbelow<CR>:split<CR>", { desc = "Split down" })
