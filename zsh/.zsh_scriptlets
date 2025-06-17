@@ -50,7 +50,7 @@ function mkcd() {
 
 themes() {
   local selection
-  selection=$(ls ~/.oh-my-posh/themes/*.omp.{json,yaml} 2>/dev/null \
+  selection=$(/bin/ls ~/.oh-my-posh/themes/*.omp.{json,yaml} 2>/dev/null \
     | xargs -n1 basename \
     | sed -E 's/\.omp\.(json|yaml)$//' \
     | sort -u \
