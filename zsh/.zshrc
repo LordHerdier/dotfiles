@@ -19,16 +19,24 @@ if command -v cargo &> /dev/null; then
     . "$HOME/.cargo/env"
 fi
 
+# If nvim dir exists, add it to the path
+if [ -f "/opt/nvim/nvim" ]; then
+    export PATH="$PATH:/opt/nvim/"
+fi
+
 autoload -Uz compinit
 compinit
 
 # Set the oh-my-posh theme
-export OMPTHEME=json.custom
+export OMPTHEME=pure
 
 # Initialize oh‑my‑posh for zsh (using your custom theme config) - only if installed
 if command -v oh-my-posh &> /dev/null; then
     eval "$(oh-my-posh init zsh --config $HOME/.oh-my-posh/themes/$OMPTHEME.omp.json)"
 fi
+
+# Default editor
+export EDITOR=nvim
 
 ###############################################################################
 # History & Completion Settings
