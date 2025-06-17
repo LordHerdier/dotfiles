@@ -13,19 +13,35 @@ function please() {
   eval "sudo $last_cmd"
 }
 
-function theme() {
+theme() {
   if [[ -z "$1" ]]; then
     echo "Usage: omp-theme <theme>"
     return 1
   fi
+
   local newtheme="$1"
-  # Update the OMPTHEME variable in .zshrc (using GNU sed; on macOS, use: sed -i '' ...)
+  local dir="$HOME/.oh-my-posh/themes"
+  local json="$dir/${newtheme}.omp.json"
+  local yaml="$dir/${newtheme}.omp.yaml"
+  local config
+
+  if [[ -f "$json" ]]; then
+    config="$json"
+  elif [[ -f "$yaml" ]]; then
+    config="$yaml"
+  else
+    echo "No theme file found for '${newtheme}' (tried .json and .yaml)."
+    return 1
+  fi
+
+  # persist in zshrc
   sed -i "s/^export OMPTHEME=.*/export OMPTHEME=${newtheme}/" ~/.zshrc
-  # Update the current session
-  export OMPTHEME=${newtheme}
-  # Reinitialize oh‑my‑posh with the new theme
-  eval "$(oh-my-posh init zsh --config $HOME/.oh-my-posh/themes/${newtheme}.omp.json)"
-  echo "OMP theme switched to ${newtheme}."
+  # current session
+  export OMPTHEME="${newtheme}"
+  # re-init with whichever file we found
+  eval "$(oh-my-posh init zsh --config "$config")"
+
+  echo "OMP theme switched to ${newtheme} ($(basename "$config"))."
 }
 
 function mkcd() {
@@ -38,7 +54,7 @@ themes() {
     | xargs -n1 basename \
     | sed -E 's/\.omp\.(json|yaml)$//' \
     | sort -u \
-    | fzf --height=100% --reverse --prompt="Select theme ▶ ")
+    | fzf --height=50% --reverse --prompt="Select theme ▶ ")
 
   if [[ -n $selection ]]; then
     theme "$selection"
