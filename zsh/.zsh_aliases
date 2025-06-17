@@ -5,6 +5,7 @@ alias cdc="ccd"
 alias q="exit"
 alias nanosu="$PRIV nano"
 alias visu="$PRIV nvim"
+alias v="nvim"
 alias em="emacs -nw"
 alias ls="exa -lgh --group-directories-first"
 alias la="exa -lgha --group-directories-first"
@@ -25,6 +26,8 @@ alias pl='please'
 alias reload='source ~/.zshrc && echo "💥 zshrc reloaded!"'
 alias nb='newsboat && clear'
 alias md='glow'
+alias mtr='mtr -t'
+alias todo='task'
 
 # Chatgpt
 alias ch='chatgpt'

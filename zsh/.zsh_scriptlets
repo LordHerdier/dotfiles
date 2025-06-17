@@ -32,8 +32,17 @@ function mkcd() {
   mkdir -p -- "$1" && cd -P -- "$1"
 }
 
-function themes() {
-  /bin/ls ~/.oh-my-posh/themes \
-  | sed -E 's/\.omp\.(json|yaml)$//' \
-  | column -c "$(tput cols)"
+themes() {
+  local selection
+  selection=$(ls ~/.oh-my-posh/themes/*.omp.{json,yaml} 2>/dev/null \
+    | xargs -n1 basename \
+    | sed -E 's/\.omp\.(json|yaml)$//' \
+    | sort -u \
+    | fzf --height=100% --reverse --prompt="Select theme ▶ ")
+
+  if [[ -n $selection ]]; then
+    theme "$selection"
+  else
+    echo "No theme selected, nothing changed."
+  fi
 }
