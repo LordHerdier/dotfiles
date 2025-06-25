@@ -1,61 +1,105 @@
-# Usual aliases
-alias c="clear"
-alias ccd="clear && cd ~"
-alias cdc="ccd"
-alias q="exit"
-alias nanosu="$PRIV nano"
-alias visu="$PRIV nvim"
-alias v="nvim"
-alias em="emacs -nw"
-alias ls="exa -lgh --group-directories-first"
-alias la="exa -lgha --group-directories-first"
-alias ll="exa -lg --group-directories-first"
-alias apt="nala"
-alias ..="cd ../"
-alias ...="cd ../.."
-alias ....="cd ../../.."
-alias .....="cd ../../../.."
-alias path="realpath"
-alias ts="tailscale.exe"
-alias files='explorer.exe .'
-alias venvc='python3 -m venv venv'
-alias venva='source venv/bin/activate'
-alias olivetin='sudo service OliveTin start'
-alias ip='ip -h -c'
-alias pl='please'
-alias reload='source ~/.zshrc && echo "💥 zshrc reloaded!"'
-alias nb='newsboat && clear'
-alias md='glow'
-alias mtr='mtr -t'
-alias todo='task'
+###############################################################################
+# Usual aliases (Things you will probably see elsewhere)
+###############################################################################
+alias c="clear"                                                 # For quickly clearing the terminal
+alias ccd="clear && cd ~"                                       # For when you want to reset your terminal
+alias cdc="ccd"                                                 # Typo replacement for ccd
+alias q="exit"                                                  # Because typing exit is way too much work
+alias ..="cd ../"                                               # To go up one directory
+alias ...="cd ../.."                                            # To go up two directories
+alias ....="cd ../../.."                                        # To go up three directories
+alias .....="cd ../../../.."                                    # To go up four directories
+alias ip='ip -h -c'                                             # Make ip command more readable
+alias reload='source ~/.zshrc && echo "💥 zshrc reloaded!"'     # Reload zshrc with a message
 
-# Chatgpt
-alias ch='chatgpt'
 
-# Quick SSH
-alias proxmox='ssh root@192.168.50.50'
-alias htpc='ssh charlotte@htpc.local.lorscapa.com'
-alias vc4='ssh brennwh@edw-vc4.isg.siue.edu'
-alias pve2='ssh root@192.168.50.174'
-alias vultr='ssh linuxuser@vultr-1.lorscapa.arpa -p 7894'
+###############################################################################
+# Editors (These are all aliases for launching various editors)
+###############################################################################
+alias nanosu="$PRIV nano"                                       # Launch nano with sudo privileges
+alias visu="$PRIV nvim"                                         # Launch nvim with sudo privileges
+alias emsu="$PRIV emacs -nw"                                    # Launch emacs with sudo privileges
+alias v="nvim"                                                  # Quick alias for nvim
+alias vi="nvim"                                                 # Muscle memory be damned
+alias vim="nvim"                                                # Because obviously
+alias v.="nvim ."                                               # Quickly edit the current directory
+alias v..="nvim .."                                             # Quickly edit the parent directory
+alias em="emacs -nw"                                            # Launch emacs in terminal mode
+alias emacs="emacs -nw"                                         # Launch emacs in terminal mode
 
-# Docker aliases
-alias dc="docker compose"
-alias dcu="docker compose up"
-alias dcud="docker compose up -d"
-alias dcuf="docker compose up --force-recreate"
-alias dcudf="docker compose up -d --force-recreate"
-alias dcd="docker compose down"
-alias dcs="docker compose stop"
-alias dcp="docker compose pull"
-alias dcl="docker compose logs"
-alias dclf="docker compose logs --follow"
-function gcb() { git checkout -b "$1" }   # new branch
-function gco() { git checkout "$1" }     # switch
-function gpo() { git push origin HEAD }   # push current
 
-# bruh aliases
-alias npm='/usr/bin/npm'
+###############################################################################
+# Quick Commands (These are all quick commands to launch various programs)
+###############################################################################
+alias y='yazi'                                                  # Launch yazi file manager
+alias browse='yazi'                                             # Alias for yazi
+alias nb='newsboat && clear'                                    # Launch newsboat and clear the terminal
+alias md='glow'                                                 # Launch glow markdown viewer
+alias mtr='mtr -t'                                              # Launch mtr with trace flag
+alias todo='task'                                               # Launch task (taskwarrior, a todo list manager)
+alias ch='chatgpt'                                              # Launch chatgpt
+alias pl='please'                                               # Launch please
+alias olivetin='sudo service OliveTin start'                    # Launch OliveTin (a custom service for managing some work devices)
+alias path="realpath"                                           # Alias for realpath
 
-# oh my posh theming
-#alias omp-theme='source ~/bin/omp-theme'
+
+###############################################################################
+# Coreutils/distro replacements (Replace ls with exa, and apt with nala)
+###############################################################################
+alias ls="exa -lgh --group-directories-first"                   # List files in long format with hidden files, group directories first
+alias la="exa -lgha --group-directories-first"                  # List all files in long format with hidden files, group directories first
+alias ll="exa -lg --group-directories-first"                    # List files in long format, group directories first
+alias apt="nala"                                                # Alias for nala (a package manager)
+
+
+###############################################################################
+# Windows launchers (For WSL) (Interact with windows programs)
+###############################################################################
+alias ts="tailscale.exe"                                        # Interface with the windows tailscale client
+alias files='explorer.exe .'                                    # Launch explorer in the current directory
+
+
+###############################################################################
+# Python virtual environments (Create and activate python virtual environments)
+###############################################################################
+alias venvc='python3 -m venv venv'                              # Create a python virtual environment
+alias venva='source venv/bin/activate'                          # Activate a python virtual environment
+
+
+###############################################################################
+# Quick SSH (SSH into various servers) (TODO: Move to ssh_aliases)
+###############################################################################
+alias proxmox='ssh root@192.168.50.50'                          # SSH into the proxmox server
+alias htpc='ssh charlotte@htpc.local.lorscapa.com'              # SSH into the htpc server
+alias vc4='ssh brennwh@edw-vc4.isg.siue.edu'                    # SSH into the vc4 server
+alias pve2='ssh root@192.168.50.174'                            # SSH into the pve2 server
+alias vultr='ssh linuxuser@vultr-1.lorscapa.arpa -p 7894'       # SSH into the vultr server
+
+
+###############################################################################
+# Docker aliases (Quick docker commands)
+###############################################################################
+alias dc="docker compose"                                       # Alias for docker compose
+alias dcu="docker compose up"                                   # Start docker compose
+alias dcud="docker compose up -d"                               # Start docker compose in detached mode
+alias dcuf="docker compose up --force-recreate"                 # Force recreate docker compose
+alias dcudf="docker compose up -d --force-recreate"             # Start docker compose in detached mode and force recreate
+alias dcd="docker compose down"                                 # Stop docker compose
+alias dcs="docker compose stop"                                 # Stop docker compose
+alias dcp="docker compose pull"                                 # Pull docker compose
+alias dcl="docker compose logs"                                 # View docker compose logs
+alias dclf="docker compose logs --follow"                       # Follow docker compose logs
+
+
+###############################################################################
+# Git aliases (Quick git commands)
+###############################################################################
+function gcb() { git checkout -b "$1" }                         # Create a new branch
+function gco() { git checkout "$1" }                            # Switch to a branch
+function gpo() { git push origin HEAD }                         # Push current branch to origin
+
+
+###############################################################################
+# bruh aliases (Things that shouldn't be needed, but are...)
+###############################################################################
+alias npm='/usr/bin/npm'                                        # Alias for npm
