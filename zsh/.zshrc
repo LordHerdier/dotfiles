@@ -65,20 +65,9 @@ fi
 ###############################################################################
 # Aliases, Functions, and Extras
 ###############################################################################
-# Source your custom aliases and functions from .bash_aliases (they're mostly portable)
-if [ -f ~/.zsh_aliases ]; then
-  source ~/.zsh_aliases
-fi
-
-# Source scriptlets
-if [ -f ~/.zsh_scriptlets ]; then
-  source ~/.zsh_scriptlets
-fi
-
-# Source secrets
-if [ -f ~/.secrets.zsh ]; then
-    source ~/.secrets.zsh
-fi
+for file in ~/.zsh_aliases ~/.zsh_scriptlets ~/.secrets.zsh; do
+    [ -f "$file" ] && source "$file"
+done
 
 # Chatgpt completions - only if chatgpt is installed
 if command -v chatgpt &> /dev/null; then
@@ -101,24 +90,21 @@ if command -v zoxide &> /dev/null; then
     eval "$(zoxide init zsh --cmd cd)"
 fi
 
-# Re-Init OMP Theme - only if oh-my-posh and omp-theme are available
-if command -v oh-my-posh &> /dev/null && command -v omp-theme &> /dev/null; then
-    omp-theme ${OMPTHEME} > /dev/null
-fi
 
 ###############################################################################
 # Pyenv Setup
 ###############################################################################
-# Init pyenv (python version manager) if installed
+# Init pyenv (python version manager) if installed - lazy load for faster startup
 if [ -d "$HOME/.pyenv" ]; then
     export PYENV_ROOT="$HOME/.pyenv"
     [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
-    eval "$(pyenv init - zsh)"
-
-    # Load pyenv-virtualenv if available
-    if command -v pyenv-virtualenv-init > /dev/null; then
-        eval "$(pyenv virtualenv-init -)"
-    fi
+    
+    # Lazy load pyenv to speed up shell startup
+    pyenv() {
+        eval "$(command pyenv init - zsh)"
+        [ -s "$HOME/.pyenv/versions/pyenv-virtualenv" ] && eval "$(command pyenv virtualenv-init -)"
+        pyenv "$@"
+    }
 fi
 
 ###############################################################################
