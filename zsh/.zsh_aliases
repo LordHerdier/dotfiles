@@ -67,16 +67,6 @@ alias venva='source venv/bin/activate'                          # Activate a pyt
 
 
 ###############################################################################
-# Quick SSH (SSH into various servers) (TODO: Move to ssh_aliases)
-###############################################################################
-alias proxmox='ssh root@192.168.50.50'                          # SSH into the proxmox server
-alias htpc='ssh charlotte@htpc.local.lorscapa.com'              # SSH into the htpc server
-alias vc4='ssh brennwh@edw-vc4.isg.siue.edu'                    # SSH into the vc4 server
-alias pve2='ssh root@192.168.50.174'                            # SSH into the pve2 server
-alias vultr='ssh linuxuser@vultr-1.lorscapa.arpa -p 7894'       # SSH into the vultr server
-
-
-###############################################################################
 # Docker aliases (Quick docker commands)
 ###############################################################################
 alias dc="docker compose"                                       # Alias for docker compose
