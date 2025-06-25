@@ -34,8 +34,8 @@ theme() {
     return 1
   fi
 
-  # persist in zshrc
-  sed -i "s/^export OMPTHEME=.*/export OMPTHEME=${newtheme}/" ~/.zshrc
+  # persist theme to file
+  echo "$newtheme" > ~/.omp_current
   # current session
   export OMPTHEME="${newtheme}"
   # re-init with whichever file we found

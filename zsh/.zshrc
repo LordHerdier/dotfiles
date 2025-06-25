@@ -27,8 +27,12 @@ fi
 autoload -Uz compinit
 compinit
 
-# Set the oh-my-posh theme
-export OMPTHEME=pure
+# Set the oh-my-posh theme from file
+if [ -f "$HOME/.omp_current" ]; then
+    export OMPTHEME=$(cat "$HOME/.omp_current" | tr -d '\n')
+else
+    export OMPTHEME=pure  # fallback default
+fi
 
 # Initialize oh‑my‑posh for zsh (using your custom theme config) - only if installed
 if command -v oh-my-posh &> /dev/null; then
