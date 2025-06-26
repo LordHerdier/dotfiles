@@ -46,7 +46,7 @@ alias path="realpath"                                           # Alias for real
 ###############################################################################
 # Coreutils/distro replacements (Replace ls with exa, and apt with nala)
 ###############################################################################
-alias ls="exa -lgh --group-directories-first"                   # List files in long format with hidden files, group directories first
+alias ls="exa -gh --group-directories-first"                   # List files in long format with hidden files, group directories first
 alias la="exa -lgha --group-directories-first"                  # List all files in long format with hidden files, group directories first
 alias ll="exa -lg --group-directories-first"                    # List files in long format, group directories first
 alias apt="nala"                                                # Alias for nala (a package manager)
