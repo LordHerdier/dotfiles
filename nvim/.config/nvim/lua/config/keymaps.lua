@@ -43,7 +43,7 @@ map("n", "K", "I", { desc = "Insert at line start" })
 --map("v", "<leader>tt", ":s/    /\t/g", { desc = "Convert 4 spaces to tabs (selection)" })
 
 -- Folding
---map("n", "<leader>o", "za", { desc = "Toggle fold" })
+map("n", "<leader>o", "za", { desc = "Toggle fold" })
 
 -- Insert a pair of {} and go to the next line
 --map("i", "<C-y>", "<ESC>A {}<ESC>i<CR><ESC>ko", { desc = "Insert braces and new line" })
