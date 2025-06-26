@@ -6,3 +6,5 @@ secrets.yml
 emacs/.emacs.d/elpa/*
 newsboat/.newsboat/cache.db
 secrets
+zsh/package.json
+zsh/package-lock.json
