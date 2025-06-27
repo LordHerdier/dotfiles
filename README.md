@@ -14,9 +14,17 @@ This is a [GNU Stow](https://www.gnu.org/software/stow/)-based dotfiles setup th
 - **Oh-My-Posh** (`omp/`): Beautiful terminal prompts with custom themes
 
 ### 📝 Text Editors & Tools
+- **Neovim** (`nvim/`): Modern Vim configuration with LazyVim setup for a powerful development environment
 - **Emacs** (`emacs/`): My Emacs configuration for when I want that classic editor experience
 - **Neomutt** (`neomutt/`): Email client configuration
 - **Newsboat** (`newsboat/`): RSS feed reader setup
+
+### 🗂️ File Management
+- **Yazi** (`yazi/`): Terminal file manager with custom keybindings and configuration
+
+### ⚙️ System Configurations
+- **Git** (`git/`): Git configuration with GPG signing and user settings
+- **Secrets** (`secrets/`): Environment variables and SSH aliases (⚠️ private repository submodule)
 
 ### 🛠️ Utility Scripts (`bin/`)
 A collection of utility scripts that make my life easier:
@@ -26,7 +34,12 @@ A collection of utility scripts that make my life easier:
 - `repeatcmd`: Run commands at intervals
 - `extract`: Universal archive extractor
 - `nagios`: Nagios monitoring script launcher
-- Plus several others for various specific tasks
+- `find-file`: File search utility
+- `manager`: System management helper
+- `efficient`: System efficiency tools
+- `trim`: Text trimming utility
+- `vipe`: Edit pipe data with your editor, credit to [@juliangruber](https://github.com/juliangruber/vipe/tree/master)
+- Plus binary tools like `nvim` and `lazydocker`
 
 ### 🚀 Bootstrap Script (`scripts/`)
 An automated setup script that:
