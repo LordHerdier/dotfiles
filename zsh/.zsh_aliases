@@ -79,7 +79,7 @@ alias dcs="docker compose stop"                                 # Stop docker co
 alias dcp="docker compose pull"                                 # Pull docker compose
 alias dcl="docker compose logs"                                 # View docker compose logs
 alias dclf="docker compose logs --follow"                       # Follow docker compose logs
-
+alias dcr="docker compose run"					# Run docker compose image
 
 ###############################################################################
 # Git aliases (Quick git commands)
