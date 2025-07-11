@@ -215,6 +215,14 @@ for pkg in "${SELECTION[@]}"; do
       ;;
     oh-my-posh)
       echo; echo "Installing Oh My Posh"
+      if [ "$PKG" = "apt" ]; then
+        sudo apt-get update
+        sudo apt-get install -y unzip
+      elif [ "$PKG" = "yum" ]; then
+        sudo yum install -y unzip
+      else
+        sudo pacman -S --needed --noconfirm unzip
+      fi
       curl -s https://ohmyposh.dev/install.sh | bash -s
       ;;
     zoxide)
