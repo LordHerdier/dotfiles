@@ -8,3 +8,4 @@ newsboat/.newsboat/cache.db
 secrets
 zsh/package.json
 zsh/package-lock.json
+.env
