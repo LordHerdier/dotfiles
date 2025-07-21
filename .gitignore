@@ -12,3 +12,4 @@ zsh/package-lock.json
 emacs/.emacs.d/*
 bin/bin/efficient.log
 *.eln
+.env
