@@ -11,12 +11,12 @@ eww daemon
 # eww open menu
 
 # All other aesthetic gifs
-eww open gif1
-eww open gif2
-# eww open gif3
+# eww open gif1
+# eww open gif2
+# # eww open gif3
 
 # The temperature widget
-eww open diinkitemperature
+# eww open diinkitemperature
 
 
 # Call the weather polling function once initially.
