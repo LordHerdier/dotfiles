@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#
+# ~/bin/pings — open editor for hosts, then ping them all and show a summary table.
+
+# Create a temp file and ensure cleanup
+tmpfile=$(mktemp /tmp/pings.XXXXXX) || exit 1
+trap 'rm -f "$tmpfile"' EXIT
+
+# Seed the file with a hint
+cat >"$tmpfile" <<'EOF'
+# Enter one host (IP or hostname) per line.
+# Lines starting with # or blank lines are ignored.
+EOF
+
+# Open the editor
+${EDITOR:-vi} "$tmpfile"
+
+# Read non-comment, non-blank lines into an array
+mapfile -t hosts < <(grep -Ev '^\s*(#|$)' "$tmpfile")
+
+if [ ${#hosts[@]} -eq 0 ]; then
+  echo "No hosts provided. Exiting."
+  exit 1
+fi
+
+# Print header
+printf "\n%-25s  %-12s  %-8s\n" "HOST" "PACKET LOSS" "AVG RTT"
+printf "%-25s  %-12s  %-8s\n" "----" "-----------" "-------"
+
+# Ping each host and extract stats
+for h in "${hosts[@]}"; do
+  if out=$(ping -c 2 -q "$h" 2>/dev/null); then
+    loss=$(echo "$out" | grep -oP '\d+(?=% packet loss)')
+    # extract the avg from "rtt min/avg/max/mdev = a/b/c/d ms"
+    avg=$(echo "$out" | grep -oP '(?<=rtt min\/avg\/max\/mdev = ).*' | cut -d'/' -f2)
+    printf "%-25s  %-10s%%  %-7sms\n" "$h" "$loss" "$avg"
+  else
+    printf "%-25s  %-12s  %-8s\n" "$h" "unreachable" "-"
+  fi
+done
+
+echo
