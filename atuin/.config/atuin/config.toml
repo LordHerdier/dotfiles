@@ -1,0 +1,4 @@
+sync_address = "https://atuin.lorscapa.com"
+sync_frequency = "1m"
+style = "auto"
+
