@@ -122,6 +122,9 @@ if [ -d "$HOME/.nvm" ]; then
     [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
 fi
 
+###############################################################################
+# Atuin
+###############################################################################
 . "$HOME/.atuin/bin/env"
-
 eval "$(atuin init zsh)"
+export PATH="$PATH:$HOME/.atuin/bin"
