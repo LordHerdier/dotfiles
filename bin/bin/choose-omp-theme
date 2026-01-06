@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Where your themes live
+THEMEDIR="${HOME}/.oh-my-posh/themes"
+
+if [[ ! -d "$THEMEDIR" ]]; then
+  echo "Oops: no themes directory at $THEMEDIR" >&2
+  exit 1
+fi
+
+# Collect all .omp.json files
+mapfile -t files < <(printf "%s\n" "$THEMEDIR"/*.omp.json)
+
+# Handle no-matches (glob returns literal if none found)
+if [[ ${#files[@]} -eq 0 || ! -e "${files[0]}" ]]; then
+  echo "No .omp.json files found in $THEMEDIR" >&2
+  exit 1
+fi
+
+# Extract just the base theme names (strip ".omp.json")
+themes=()
+for f in "${files[@]}"; do
+  themes+=( "$(basename "$f" .omp.json)" )
+done
+
+# How many themes do we have?
+n=${#themes[@]}
+
+# Compute max length of a theme name so columns look decent
+maxlen=0
+for t in "${themes[@]}"; do
+  (( ${#t} > maxlen )) && maxlen=${#t}
+done
+
+# Decide on number of columns (feel free to change)
+cols=3
+rows=$(( (n + cols - 1) / cols ))
+
+# Print them in columns, numbered 1..N
+echo "Available OMP themes:"
+for ((i=0; i<rows; i++)); do
+  line=""
+  for ((j=0; j<cols; j++)); do
+    idx=$(( i + j * rows ))
+    if (( idx < n )); then
+      # Format: " 1) themename      " with dynamic padding
+      printf -v entry "%2d) %-${maxlen}s  " "$(( idx + 1 ))" "${themes[idx]}"
+      line+="$entry"
+    fi
+  done
+  echo "$line"
+done
+
+# Prompt user until they pick a valid number
+while true; do
+  echo -n "Enter the number of the theme you want (1-$n): "
+  read -r choice
+  if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= n )); then
+    break
+  else
+    echo "  Nope, that ain’t a valid option. Try again."
+  fi
+done
+
+# Apply it
+sel="${themes[choice-1]}"
+echo "Switching to theme '$sel'..."
+"~/bin/omp-theme" "$sel"
