@@ -1,0 +1,91 @@
+#!/bin/bash
+
+# --- COLORS ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m' # Bold Yellow
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color (reset)
+
+# 0. Safety Check: Ensure sshpass is installed
+if ! command -v sshpass &> /dev/null; then
+    echo -e "${RED}Error: 'sshpass' is required but not installed.${NC}"
+    echo "Install it with: sudo apt install sshpass"
+    exit 1
+fi
+
+# Check if an IP/Hostname was provided
+if [ -z "$1" ]; then
+    echo "Usage: $0 <hostname_or_ip>"
+    exit 1
+fi
+
+INPUT=$1
+
+# --- SMART TARGET LOGIC ---
+# 1. Determine the domain suffix.
+#    Use the env var $DEFAULT_DOMAIN if set, otherwise default to .id.siue.edu
+DOMAIN_SUFFIX="${DEFAULT_DOMAIN:-.id.siue.edu}"
+
+# 2. Check input for dots.
+#    If input has NO dots (e.g. "SE2214-PANEL"), append the suffix.
+#    If input HAS dots (e.g. "192.168.1.50"), use as is.
+if [[ "$INPUT" != *.* ]]; then
+    TARGET="${INPUT}${DOMAIN_SUFFIX}"
+else
+    TARGET="$INPUT"
+fi
+
+# 1. SSH Options
+SSH_OPTS="-o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=QUIET -o HostKeyAlgorithms=+ssh-rsa"
+
+# 2. Define the "Success Threshold" (in seconds)
+SUCCESS_THRESHOLD=5
+
+echo -e "${CYAN}----------------------------------------${NC}"
+echo -e "${CYAN}Targeting: ${TARGET}${NC}"
+echo -e "${CYAN}----------------------------------------${NC}"
+
+# --- PRIORITY 1: SSH as ADMIN (from $ADMIN_PASS) ---
+echo -e " ${YELLOW}[1/3] Attempting SSH as 'admin' (using \$ADMIN_PASS)...${NC}"
+
+START_TIME=$SECONDS
+
+export SSHPASS=$ADMIN_PASS
+sshpass -e ssh $SSH_OPTS admin@"$TARGET"
+EXIT_CODE=$?
+
+DURATION=$(( SECONDS - START_TIME ))
+
+if [ $EXIT_CODE -eq 0 ] || [ $DURATION -gt $SUCCESS_THRESHOLD ]; then
+    echo -e " ${GREEN}[✓] Session finished (admin).${NC}"
+    exit 0
+else
+    echo -e " ${RED}[X] Auth failed or Connection Refused (Duration: ${DURATION}s)${NC}"
+fi
+
+echo ""
+
+# --- PRIORITY 2: SSH as CRESTRON (Empty Password) ---
+echo -e " ${YELLOW}[2/3] Attempting SSH as 'crestron' (No Password)...${NC}"
+
+START_TIME=$SECONDS
+
+sshpass -p "" ssh $SSH_OPTS crestron@"$TARGET"
+EXIT_CODE=$?
+
+DURATION=$(( SECONDS - START_TIME ))
+
+if [ $EXIT_CODE -eq 0 ] || [ $DURATION -gt $SUCCESS_THRESHOLD ]; then
+    echo -e " ${GREEN}[✓] Session finished (crestron).${NC}"
+    exit 0
+else
+    echo -e " ${RED}[X] Connection failed.${NC}"
+fi
+
+echo ""
+
+# --- PRIORITY 3: TELNET (CIP Port) ---
+echo -e " ${YELLOW}[3/3] Attempting Telnet on port 41795...${NC}"
+echo -e "${CYAN}----------------------------------------${NC}"
+telnet "$TARGET" 41795
