@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# --- COLORS ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+die() { echo -e "${RED}Error:${NC} $*" >&2; exit 1; }
+
+# 0) deps
+command -v sshpass >/dev/null 2>&1 || die "'sshpass' is required. Install with: sudo apt install sshpass"
+command -v scp >/dev/null 2>&1 || die "'scp' not found (openssh-client)."
+command -v ssh >/dev/null 2>&1 || die "'ssh' not found (openssh-client)."
+
+# 1) args
+if [[ $# -lt 1 ]]; then
+  cat <<'USAGE'
+Usage:
+  panelshot <hostname_or_ip> [output_dir]
+
+Env:
+  ADMIN_PASS      Password for admin login (used via sshpass -e)
+  DEFAULT_DOMAIN  Domain suffix appended when input has no dots (default: .id.siue.edu)
+
+Examples:
+  ADMIN_PASS='supersecret' panelshot hs1310-panel
+  DEFAULT_DOMAIN='.id.siue.edu' panelshot 10.30.40.50 /tmp/shots
+USAGE
+  exit 1
+fi
+
+INPUT="$1"
+OUT_DIR="${2:-.}"
+
+# 2) smart target logic (same as your connect script)
+DOMAIN_SUFFIX="${DEFAULT_DOMAIN:-.id.siue.edu}"
+if [[ "$INPUT" != *.* ]]; then
+  TARGET="${INPUT}${DOMAIN_SUFFIX}"
+else
+  TARGET="$INPUT"
+fi
+
+mkdir -p "$OUT_DIR" || die "Couldn't create output dir: $OUT_DIR"
+
+# 3) SSH opts (Crestron tends to be… nostalgic)
+SSH_OPTS=(
+  -o ConnectTimeout=6
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o LogLevel=QUIET
+  -o HostKeyAlgorithms=+ssh-rsa
+  -o PubkeyAuthentication=no
+)
+
+# Running the console commands reliably:
+# - Force a TTY (-tt)
+# - Capture output and look for success marker, because `bye` may drop the session with non-zero exit.
+run_console_cmds() {
+  local user="$1"
+  local pass_mode="$2"   # "env" or "empty"
+  local ssh_target="${user}@${TARGET}"
+
+  echo -e "${YELLOW}Attempting SSH as '${user}'...${NC}"
+
+  local out rc
+  if [[ "$pass_mode" == "env" ]]; then
+    [[ -n "${ADMIN_PASS:-}" ]] || die "ADMIN_PASS is not set (needed for admin login)."
+    export SSHPASS="$ADMIN_PASS"
+    out="$(sshpass -e ssh -tt "${SSH_OPTS[@]}" "$ssh_target" <<'EOF'
+screenshot
+bye
+EOF
+)" || rc=$?
+  else
+    out="$(sshpass -p "" ssh -tt "${SSH_OPTS[@]}" "$ssh_target" <<'EOF'
+screenshot
+bye
+EOF
+)" || rc=$?
+  fi
+
+  # Debug toggle if you ever need it:
+  # [[ "${PANELSHOT_DEBUG:-0}" == "1" ]] && echo "$out"
+
+  # Success heuristics: Crestron prints these when screenshot worked.
+  # Add more markers if your models differ.
+  if echo "$out" | grep -Eq "PNG File Saved|Generating a screen shot|Begin pixel grab"; then
+    return 0
+  fi
+
+  # If auth fails, Crestron/ssh usually produces something useful; keep it for debugging when needed.
+  return "${rc:-1}"
+}
+
+# 4) Do screenshot via SSH
+echo -e "${CYAN}----------------------------------------${NC}"
+echo -e "${CYAN}Targeting: ${TARGET}${NC}"
+echo -e "${CYAN}----------------------------------------${NC}"
+
+SHOT_OK=0
+AUTH_USER=""
+
+if run_console_cmds "admin" "env"; then
+  SHOT_OK=1
+  AUTH_USER="admin"
+else
+  echo -e "${RED}[X] admin attempt failed.${NC}"
+fi
+
+if [[ "$SHOT_OK" -eq 0 ]]; then
+  if run_console_cmds "crestron" "empty"; then
+    SHOT_OK=1
+    AUTH_USER="crestron"
+  else
+    echo -e "${RED}[X] crestron attempt failed.${NC}"
+  fi
+fi
+
+[[ "$SHOT_OK" -eq 1 ]] || die "Could not run screenshot command on ${TARGET} via SSH."
+
+echo -e "${GREEN}[✓] Screenshot command executed on panel (${AUTH_USER}).${NC}"
+
+# 5) Pull the file back
+# Crestron has multiple “where the heck is ROMDISK today?” vibes.
+REMOTE_CANDIDATES=(
+  "/logs/ScreenShot.png"
+  "/logs/ScreenShot.bmp"
+)
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+SAFE_NAME="${INPUT//[^a-zA-Z0-9_.-]/_}"
+LOCAL_FILE="${OUT_DIR%/}/${SAFE_NAME}-${STAMP}-ScreenShot.png"
+
+echo -e "${YELLOW}Downloading screenshot via scp...${NC}"
+
+DL_OK=0
+for remote_path in "${REMOTE_CANDIDATES[@]}"; do
+  if [[ "$AUTH_USER" == "admin" ]]; then
+    export SSHPASS="$ADMIN_PASS"
+    if sshpass -e scp "${SSH_OPTS[@]}" "${AUTH_USER}@${TARGET}:${remote_path}" "$LOCAL_FILE" >/dev/null 2>&1; then
+      DL_OK=1
+      break
+    fi
+  else
+    if sshpass -p "" scp "${SSH_OPTS[@]}" "${AUTH_USER}@${TARGET}:${remote_path}" "$LOCAL_FILE" >/dev/null 2>&1; then
+      DL_OK=1
+      break
+    fi
+  fi
+done
+
+[[ "$DL_OK" -eq 1 ]] || die "Screenshot was generated, but scp couldn't find it in expected paths."
+
+echo -e "${GREEN}[✓] Saved:${NC} ${LOCAL_FILE}"
+
+# --- Auto-open screenshot in Windows (WSL2) ---
+WIN_PATH="$(wslpath -w "$LOCAL_FILE")"
+
+echo -e "${CYAN}Opening image in Windows viewer...${NC}"
+
+# Try Explorer (default handler)
+explorer.exe "$WIN_PATH" >/dev/null

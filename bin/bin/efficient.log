@@ -1,0 +1,33 @@
+2025-07-17 11:02:33,087 [connection.py:57] INFO: Connecting to efficient.net.siue.edu as brennwh
+2025-07-17 11:02:33,173 [connection.py:63] INFO: Successfully connected to SOLIDserver
+2025-07-17 11:02:33,173 [connection.py:93] INFO: Retrieving space: SIUE
+2025-07-17 11:02:33,212 [connection.py:98] INFO: Successfully retrieved space 'SIUE' with ID: 3
+2025-07-17 11:02:33,212 [connection.py:118] INFO: Cleaning up SDS connection
+2025-07-17 11:02:35,968 [connection.py:57] INFO: Connecting to efficient.net.siue.edu as brennwh
+2025-07-17 11:02:36,042 [connection.py:63] INFO: Successfully connected to SOLIDserver
+2025-07-17 11:02:36,042 [connection.py:93] INFO: Retrieving space: SIUE
+2025-07-17 11:02:36,083 [connection.py:98] INFO: Successfully retrieved space 'SIUE' with ID: 3
+2025-07-17 11:02:36,083 [vlan_info.py:470] INFO: Processing VLAN list
+2025-07-17 11:02:37,187 [vlan_info.py:489] INFO: Successfully listed 21 VLANs
+2025-07-17 11:02:37,187 [connection.py:118] INFO: Cleaning up SDS connection
+2025-07-17 11:02:39,001 [connection.py:57] INFO: Connecting to efficient.net.siue.edu as brennwh
+2025-07-17 11:02:39,071 [connection.py:63] INFO: Successfully connected to SOLIDserver
+2025-07-17 11:02:39,071 [connection.py:93] INFO: Retrieving space: SIUE
+2025-07-17 11:02:39,108 [connection.py:98] INFO: Successfully retrieved space 'SIUE' with ID: 3
+2025-07-17 11:02:39,108 [vlan_info.py:470] INFO: Processing VLAN list
+2025-07-17 11:02:50,458 [vlan_info.py:489] INFO: Successfully listed 21 VLANs
+2025-07-17 11:02:50,458 [connection.py:118] INFO: Cleaning up SDS connection
+2025-07-17 11:02:55,603 [connection.py:57] INFO: Connecting to efficient.net.siue.edu as brennwh
+2025-07-17 11:02:55,673 [connection.py:63] INFO: Successfully connected to SOLIDserver
+2025-07-17 11:02:55,673 [connection.py:93] INFO: Retrieving space: SIUE
+2025-07-17 11:02:55,712 [connection.py:98] INFO: Successfully retrieved space 'SIUE' with ID: 3
+2025-07-17 11:02:55,712 [vlan_info.py:516] INFO: Processing VLAN show IPs for SmartClassroom
+2025-07-17 11:03:04,993 [vlan_info.py:574] INFO: Successfully showed IPs for VLAN SmartClassroom
+2025-07-17 11:03:04,994 [connection.py:118] INFO: Cleaning up SDS connection
+2025-07-17 11:03:08,650 [connection.py:57] INFO: Connecting to efficient.net.siue.edu as brennwh
+2025-07-17 11:03:08,724 [connection.py:63] INFO: Successfully connected to SOLIDserver
+2025-07-17 11:03:08,724 [connection.py:93] INFO: Retrieving space: SIUE
+2025-07-17 11:03:08,768 [connection.py:98] INFO: Successfully retrieved space 'SIUE' with ID: 3
+2025-07-17 11:03:08,768 [vlan_info.py:516] INFO: Processing VLAN show IPs for SmartClassroom
+2025-07-17 11:03:13,100 [vlan_info.py:574] INFO: Successfully showed IPs for VLAN SmartClassroom
+2025-07-17 11:03:13,100 [connection.py:118] INFO: Cleaning up SDS connection
