@@ -1,0 +1,7 @@
+2025-11-14 07:13:28,551 [connection.py:57] INFO: Connecting to efficient.net.siue.edu as brennwh
+2025-11-14 07:13:28,619 [connection.py:63] INFO: Successfully connected to SOLIDserver
+2025-11-14 07:13:28,619 [connection.py:93] INFO: Retrieving space: SIUE
+2025-11-14 07:13:28,655 [connection.py:98] INFO: Successfully retrieved space 'SIUE' with ID: 3
+2025-11-14 07:13:28,655 [vlan_info.py:516] INFO: Processing VLAN show IPs for AppleTV
+2025-11-14 07:13:29,913 [vlan_info.py:574] INFO: Successfully showed IPs for VLAN AppleTV
+2025-11-14 07:13:29,913 [connection.py:118] INFO: Cleaning up SDS connection
