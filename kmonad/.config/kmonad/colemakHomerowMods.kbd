@@ -20,10 +20,11 @@
     sft_d (tap-hold 200 d lsft)
     ctl_f (tap-hold 200 f lctl)
 
-    nav_g g
-    nav_h h
+    nav_g (tap-hold 200 g (layer-toggle nav))
+    nav_h (tap-hold 200 h (layer-toggle nav))
 
     ctl_j (tap-hold 200 j lctl)
+
     sft_k (tap-hold 200 k lsft)
     alt_l (tap-hold 200 l lalt)
     met_; (tap-hold 200 ; lmet)
