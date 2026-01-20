@@ -9,3 +9,6 @@ secrets
 zsh/package.json
 zsh/package-lock.json
 .env
+emacs/.emacs.d/*
+bin/bin/efficient.log
+*.eln
