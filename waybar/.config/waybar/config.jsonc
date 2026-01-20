@@ -25,6 +25,14 @@
 "pulseaudio",
 ],
 
+"custom/os_btn": {
+"format": "{icon}",
+"icon-size": 28,
+"on-click": "~/bin/wall next",
+"on-right-click": "~/bin/wall prev",
+"on-double-click": "~/bin/wall random"
+},
+
 "sway/workspaces": {
 "disable-scroll": false,
 "all-outputs": true,
