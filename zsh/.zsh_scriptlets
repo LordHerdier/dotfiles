@@ -62,3 +62,91 @@ themes() {
     echo "No theme selected, nothing changed."
   fi
 }
+
+function omp-tinder() {
+  # stash your current vibe
+  local original
+  original=$(<~/.omp_current 2>/dev/null)
+
+  # grab all themes
+  local themes=()
+  local file t
+  for file in "$HOME/.oh-my-posh/themes"/*.omp.json "$HOME/.oh-my-posh/themes"/*.omp.yaml; do
+    [[ -f $file ]] || continue
+    t=${file:t}             # basename
+    t=${t%.omp.json}        
+    t=${t%.omp.yaml}
+    themes+=("$t")
+  done
+
+  [[ ${#themes[@]} -eq 0 ]] && {
+    echo "🚨 No OMP themes found in ~/.oh-my-posh/themes!"
+    return 1
+  }
+
+  # where favorites live
+  local fav_file=~/.omp_favorites
+  touch "$fav_file"
+
+  while true; do
+    # pick one at (pseudo) random
+    local idx=$(( RANDOM % ${#themes[@]} + 1 ))
+    local theme_name=${themes[idx]}
+
+    # show it off
+    theme "$theme_name"
+
+    # spin up a quick Zsh, re-init OMP with the same config, show the prompt, then bail
+    local json="$HOME/.oh-my-posh/themes/${theme_name}.omp.json"
+    local yaml="$HOME/.oh-my-posh/themes/${theme_name}.omp.yaml"
+    local config
+    if [[ -f $json ]]; then
+      config=$json
+    elif [[ -f $yaml ]]; then
+      config=$yaml
+    fi
+
+   echo
+   zsh -ic "eval \"\$(oh-my-posh init zsh --config '$config')\"; exit"
+   echo
+
+    echo
+    # prompt for your next move
+    local choice
+    read -k1 "choice?[(n)ext/(f)avorite/(a)pply and quit/(q)uit] "
+    echo
+
+    case $choice in
+      n)  # meh, next theme
+          continue
+          ;;
+      f)  # keep it for later
+          if ! grep -Fxq "$theme_name" "$fav_file"; then
+            echo "$theme_name" >> "$fav_file"
+            echo "★ Added '$theme_name' to $fav_file"
+          else
+            echo "★ '$theme_name' is already in $fav_file"
+          fi
+          continue
+          ;;
+      a)  # settle on this one
+          echo "✅ Applied and saved '$theme_name' as your new default."
+          break
+          ;;
+      q)  # abort, go back to what you had
+          if [[ -n $original ]]; then
+            echo "↩️  Reverting to '$original'."
+            theme "$original"
+          else
+            echo "🔚 Quitting without a previous theme to restore."
+          fi
+          break
+          ;;
+      *)  # unexpected
+          echo "Use n, f, a, or q—you know the drill."
+          continue
+          ;;
+    esac
+  done
+}
+

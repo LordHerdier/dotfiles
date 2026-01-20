@@ -11,7 +11,7 @@ alias ....="cd ../../.."                                        # To go up three
 alias .....="cd ../../../.."                                    # To go up four directories
 alias ip='ip -h -c'                                             # Make ip command more readable
 alias reload='source ~/.zshrc && echo "💥 zshrc reloaded!"'     # Reload zshrc with a message
-
+alias rb='reboot'
 
 ###############################################################################
 # Editors (These are all aliases for launching various editors)
@@ -93,3 +93,4 @@ function gpo() { git push origin HEAD }                         # Push current b
 # bruh aliases (Things that shouldn't be needed, but are...)
 ###############################################################################
 alias npm='/usr/bin/npm'                                        # Alias for npm
+alias wall='~/bin/wall'                                         # Wallpaper switcher
