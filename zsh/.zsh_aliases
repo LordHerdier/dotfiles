@@ -12,6 +12,7 @@ alias .....="cd ../../../.."                                    # To go up four 
 alias ip='ip -h -c'                                             # Make ip command more readable
 alias reload='source ~/.zshrc && echo "💥 zshrc reloaded!"'     # Reload zshrc with a message
 alias rb='reboot'
+alias tree='tree -C --dirsfirst'				# Make tree a little prettier
 
 ###############################################################################
 # Editors (These are all aliases for launching various editors)
@@ -93,4 +94,10 @@ function gpo() { git push origin HEAD }                         # Push current b
 # bruh aliases (Things that shouldn't be needed, but are...)
 ###############################################################################
 alias npm='/usr/bin/npm'                                        # Alias for npm
-alias wall='~/bin/wall'                                         # Wallpaper switcher
+alias gpg='/mnt/c/Program\ Files\ \(x86\)/GnuPG/bin/gpg.exe'
+alias gpgconf='/mnt/c/Program\ Files\ \(x86\)/GnuPG/bin/gpgconf.exe'
+
+###############################################################################
+# some variable exports for quick access
+###############################################################################
+export LOCALPROD=/mnt/c/Users/Charlotte/Documents/Crestron/classroom-production/
