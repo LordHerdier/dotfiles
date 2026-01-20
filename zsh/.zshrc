@@ -40,7 +40,7 @@ if command -v oh-my-posh &> /dev/null; then
 fi
 
 # Default editor
-export EDITOR=nvim
+export EDITOR=nano
 
 # XDG Base Directory Specification
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -131,3 +131,6 @@ fi
 export PATH="$PATH:$HOME/.atuin/bin"
 eval "$(atuin init zsh)"
 
+
+. "$HOME/.local/share/../bin/env"
+eval "$(/home/charlie/.local/bin/mise activate zsh)"
