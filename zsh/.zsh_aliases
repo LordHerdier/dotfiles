@@ -12,7 +12,7 @@ alias .....="cd ../../../.."                                    # To go up four 
 alias ip='ip -h -c'                                             # Make ip command more readable
 alias reload='source ~/.zshrc && echo "💥 zshrc reloaded!"'     # Reload zshrc with a message
 alias rb='reboot'
-alias tree='tree -C --dirsfirst'				# Make tree a little prettier
+alias tree='tree -C --dirsfirst'				                # Make tree a little prettier
 
 ###############################################################################
 # Editors (These are all aliases for launching various editors)
