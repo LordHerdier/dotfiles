@@ -134,3 +134,10 @@ fi
 if [ -f ~/.bash_scriptlets ]; then
     . ~/.bash_scriptlets
 fi
+
+. "$HOME/.atuin/bin/env"
+
+[[ -f ~/.bash-preexec.sh ]] && source ~/.bash-preexec.sh
+eval "$(atuin init bash)"
+
+. "$HOME/.local/share/../bin/env"
