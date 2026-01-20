@@ -11,9 +11,11 @@ NC='\033[0m'
 die() { echo -e "${RED}Error:${NC} $*" >&2; exit 1; }
 
 # 0) deps
+command -v pass    >/dev/null 2>&1 || die "'pass' is required. Install with: sudo apt install pass"
 command -v sshpass >/dev/null 2>&1 || die "'sshpass' is required. Install with: sudo apt install sshpass"
-command -v scp >/dev/null 2>&1 || die "'scp' not found (openssh-client)."
-command -v ssh >/dev/null 2>&1 || die "'ssh' not found (openssh-client)."
+command -v scp     >/dev/null 2>&1 || die "'scp' not found (openssh-client)."
+command -v ssh     >/dev/null 2>&1 || die "'ssh' not found (openssh-client)."
+command -v grep    >/dev/null 2>&1 || die "'grep' not found."
 
 # 1) args
 if [[ $# -lt 1 ]]; then
@@ -21,12 +23,16 @@ if [[ $# -lt 1 ]]; then
 Usage:
   panelshot <hostname_or_ip> [output_dir]
 
+Credentials:
+  Pulled from pass:
+    crestron/creds/username
+    crestron/creds/password
+
 Env:
-  ADMIN_PASS      Password for admin login (used via sshpass -e)
   DEFAULT_DOMAIN  Domain suffix appended when input has no dots (default: .id.siue.edu)
 
 Examples:
-  ADMIN_PASS='supersecret' panelshot hs1310-panel
+  panelshot hs1310-panel
   DEFAULT_DOMAIN='.id.siue.edu' panelshot 10.30.40.50 /tmp/shots
 USAGE
   exit 1
@@ -34,6 +40,13 @@ fi
 
 INPUT="$1"
 OUT_DIR="${2:-.}"
+
+# 1.5) Pull admin creds from pass (first line only)
+ADMIN_USER="$(pass show crestron/creds/username 2>/dev/null | head -n1 || true)"
+ADMIN_PASS="$(pass show crestron/creds/password 2>/dev/null | head -n1 || true)"
+
+[[ -n "$ADMIN_USER" ]] || die "Failed to read admin username from pass (crestron/creds/username)"
+[[ -n "$ADMIN_PASS" ]] || die "Failed to read admin password from pass (crestron/creds/password)"
 
 # 2) smart target logic (same as your connect script)
 DOMAIN_SUFFIX="${DEFAULT_DOMAIN:-.id.siue.edu}"
@@ -60,14 +73,15 @@ SSH_OPTS=(
 # - Capture output and look for success marker, because `bye` may drop the session with non-zero exit.
 run_console_cmds() {
   local user="$1"
-  local pass_mode="$2"   # "env" or "empty"
+  local pass_mode="$2"   # "admin" or "empty"
   local ssh_target="${user}@${TARGET}"
 
   echo -e "${YELLOW}Attempting SSH as '${user}'...${NC}"
 
   local out rc
-  if [[ "$pass_mode" == "env" ]]; then
-    [[ -n "${ADMIN_PASS:-}" ]] || die "ADMIN_PASS is not set (needed for admin login)."
+  rc=0
+
+  if [[ "$pass_mode" == "admin" ]]; then
     export SSHPASS="$ADMIN_PASS"
     out="$(sshpass -e ssh -tt "${SSH_OPTS[@]}" "$ssh_target" <<'EOF'
 screenshot
@@ -86,12 +100,10 @@ EOF
   # [[ "${PANELSHOT_DEBUG:-0}" == "1" ]] && echo "$out"
 
   # Success heuristics: Crestron prints these when screenshot worked.
-  # Add more markers if your models differ.
   if echo "$out" | grep -Eq "PNG File Saved|Generating a screen shot|Begin pixel grab"; then
     return 0
   fi
 
-  # If auth fails, Crestron/ssh usually produces something useful; keep it for debugging when needed.
   return "${rc:-1}"
 }
 
@@ -103,9 +115,9 @@ echo -e "${CYAN}----------------------------------------${NC}"
 SHOT_OK=0
 AUTH_USER=""
 
-if run_console_cmds "admin" "env"; then
+if run_console_cmds "$ADMIN_USER" "admin"; then
   SHOT_OK=1
-  AUTH_USER="admin"
+  AUTH_USER="$ADMIN_USER"
 else
   echo -e "${RED}[X] admin attempt failed.${NC}"
 fi
@@ -138,7 +150,7 @@ echo -e "${YELLOW}Downloading screenshot via scp...${NC}"
 
 DL_OK=0
 for remote_path in "${REMOTE_CANDIDATES[@]}"; do
-  if [[ "$AUTH_USER" == "admin" ]]; then
+  if [[ "$AUTH_USER" == "$ADMIN_USER" ]]; then
     export SSHPASS="$ADMIN_PASS"
     if sshpass -e scp "${SSH_OPTS[@]}" "${AUTH_USER}@${TARGET}:${remote_path}" "$LOCAL_FILE" >/dev/null 2>&1; then
       DL_OK=1
@@ -158,8 +170,10 @@ echo -e "${GREEN}[✓] Saved:${NC} ${LOCAL_FILE}"
 
 # --- Auto-open screenshot in Windows (WSL2) ---
 WIN_PATH="$(wslpath -w "$LOCAL_FILE")"
-
 echo -e "${CYAN}Opening image in Windows viewer...${NC}"
 
-# Try Explorer (default handler)
-explorer.exe "$WIN_PATH" >/dev/null
+# Open with default Windows handler
+explorer.exe "$WIN_PATH" >/dev/null 2>&1 || true
+
+# optional: be neat and not keep secrets hanging around in env
+unset SSHPASS ADMIN_PASS
