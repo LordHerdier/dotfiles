@@ -129,5 +129,3 @@ fi
 eval "$(atuin init zsh)"
 export PATH="$PATH:$HOME/.atuin/bin"
 
-. "$HOME/.local/share/../bin/env"
-eval "$(/home/charlie/.local/bin/mise activate zsh)"
