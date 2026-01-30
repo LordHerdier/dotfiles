@@ -94,8 +94,6 @@ function gpo() { git push origin HEAD }                         # Push current b
 # bruh aliases (Things that shouldn't be needed, but are...)
 ###############################################################################
 alias npm='/usr/bin/npm'                                        # Alias for npm
-alias gpg='/mnt/c/Program\ Files\ \(x86\)/GnuPG/bin/gpg.exe'
-alias gpgconf='/mnt/c/Program\ Files\ \(x86\)/GnuPG/bin/gpgconf.exe'
 
 ###############################################################################
 # some variable exports for quick access
