@@ -56,17 +56,18 @@ function copypath() {
   realpath $1 | clip.exe
 }
 
-themes() {
+themes () {
   local selection
-  selection=$(/bin/ls ~/.oh-my-posh/themes/*.omp.{json,yaml} 2>/dev/null \
-    | xargs -n1 basename \
-    | sed -E 's/\.omp\.(json|yaml)$//' \
-    | sort -u \
-    | fzf --height=50% --reverse --prompt="Select theme ▶ ")
+  local -a files names
 
+  files=(~/.oh-my-posh/themes/*.omp.(json|yaml)(N))
+  names=(${files:t:r:r})   # :t = basename, :r removes one extension; twice removes .omp and .json/.yaml
+
+  selection=$(print -l -- ${(ou)names} | fzf --height=50% --reverse --prompt="Select theme ▶ ")
   if [[ -n $selection ]]; then
     theme "$selection"
   else
     echo "No theme selected, nothing changed."
   fi
 }
+
