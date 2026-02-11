@@ -47,6 +47,17 @@ export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 
+# ---- ssh-agent (WSL-proof) ----
+if [[ -z "$SSH_AUTH_SOCK" || ! -S "$SSH_AUTH_SOCK" ]]; then
+  export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.sock"
+fi
+
+# Start agent if socket doesn't exist / isn't a socket
+if [[ ! -S "$SSH_AUTH_SOCK" ]]; then
+  mkdir -p "${XDG_RUNTIME_DIR:-/tmp}"
+  eval "$(ssh-agent -a "$SSH_AUTH_SOCK" -s)" >/dev/null
+fi
+
 ###############################################################################
 # History & Completion Settings
 ###############################################################################
@@ -105,5 +116,5 @@ fi
 ###############################################################################
 # Atuin
 ###############################################################################
-#export PATH="$PATH:$HOME/.atuin/bin"
-#eval "$(atuin init zsh)"
+export PATH="$PATH:$HOME/.atuin/bin"
+eval "$(atuin init zsh)"
