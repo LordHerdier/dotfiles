@@ -48,6 +48,14 @@ function mkcd() {
   mkdir -p -- "$1" && cd -P -- "$1"
 }
 
+function copypath() {
+  if [[ -z "$1" ]]; then
+    return 1
+  fi
+
+  realpath $1 | clip.exe
+}
+
 themes() {
   local selection
   selection=$(/bin/ls ~/.oh-my-posh/themes/*.omp.{json,yaml} 2>/dev/null \

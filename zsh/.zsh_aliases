@@ -101,3 +101,8 @@ alias gpgconf='/mnt/c/Program\ Files\ \(x86\)/GnuPG/bin/gpgconf.exe'
 # some variable exports for quick access
 ###############################################################################
 export LOCALPROD=/mnt/c/Users/Charlotte/Documents/Crestron/classroom-production/
+
+###############################################################################
+# some changes for my workflow
+###############################################################################
+alias nmapc='nmap -p 1-1000,41794,41795,41796 -Pn -T4'

@@ -8,11 +8,6 @@
 export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/bin:$PATH"
 
-# Ruby bin path - only if ruby is installed
-if command -v ruby &> /dev/null; then
-    export PATH="$HOME/.local/share/gem/ruby/3.1.0/bin:$PATH"
-fi
-
 # If cargo is installed, add it to the path
 if command -v cargo &> /dev/null; then
     export PATH="$HOME/.cargo/bin:$PATH"
@@ -25,7 +20,7 @@ if [ -f "/opt/nvim/nvim" ]; then
 fi
 
 autoload -Uz compinit
-compinit
+compinit -C -d "${XDG_CACHE_HOME:-$HOME/.cache}/zsh/zcompdump-${ZSH_VERSION}"
 
 # Set the oh-my-posh theme from file
 if [ -f "$HOME/.omp_current" ]; then
@@ -39,8 +34,13 @@ if command -v oh-my-posh &> /dev/null; then
     eval "$(oh-my-posh init zsh --config $HOME/.oh-my-posh/themes/$OMPTHEME.omp.json)"
 fi
 
+# Initialize zoxide for zsh - only if installed
+if command -v zoxide &> /dev/null; then
+    eval "$(zoxide init zsh --cmd cd)"
+fi
+
 # Default editor
-export EDITOR=nano
+export EDITOR=nvim
 
 # XDG Base Directory Specification
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -61,23 +61,8 @@ setopt append_history inc_append_history share_history
 # Enable case-insensitive completion
 zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
 
-# Ctrl-R fuzzy search through history (need fzf installed) - only if fzf is available
-if command -v fzf &> /dev/null; then
-    bindkey '^R' fzf-history-widget
-    autoload -Uz fzf-history-widget
-fi
-
-###############################################################################
-# Aliases, Functions, and Extras
-###############################################################################
-for file in ~/.zsh_aliases ~/.zsh_scriptlets ~/.secrets.zsh ~/.ssh_aliases.zsh; do
-    [ -f "$file" ] && source "$file"
-done
-
-# Chatgpt completions - only if chatgpt is installed
-if command -v chatgpt &> /dev/null; then
-    . <(chatgpt --set-completions zsh)
-fi
+# Don't append commands that start with a space to history
+setopt HIST_IGNORE_SPACE
 
 ###############################################################################
 # Oh My Zsh Framework
@@ -85,15 +70,19 @@ fi
 # Set up oh‑my‑zsh (disable its theme if you prefer oh‑my‑posh for the prompt) - only if installed
 if [ -d "$HOME/.oh-my-zsh" ]; then
     export ZSH="$HOME/.oh-my-zsh"
+
     ZSH_THEME=""  # Leave empty to avoid theme conflicts with oh-my-posh
-    plugins=(git)
+    plugins=(docker fzf git git-auto-fetch pass pip ssh)
     source $ZSH/oh-my-zsh.sh
 fi
 
-# Initialize zoxide for zsh - only if installed
-if command -v zoxide &> /dev/null; then
-    eval "$(zoxide init zsh --cmd cd)"
-fi
+
+###############################################################################
+# Aliases, Functions, and Extras
+###############################################################################
+for file in ~/.zsh_aliases ~/.zsh_scriptlets ~/.secrets.zsh ~/.ssh_aliases.zsh; do
+    [ -f "$file" ] && source "$file"
+done
 
 
 ###############################################################################
@@ -112,25 +101,9 @@ if [ -d "$HOME/.pyenv" ]; then
     }
 fi
 
-###############################################################################
-# Nvm Setup
-###############################################################################
-# Init nvm (node version manager) if installed
-if [ -d "$HOME/.nvm" ]; then
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
-    [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
-fi
-
-. "$HOME/.atuin/bin/env"
-
 
 ###############################################################################
 # Atuin
 ###############################################################################
-export PATH="$PATH:$HOME/.atuin/bin"
-eval "$(atuin init zsh)"
-
-
-. "$HOME/.local/share/../bin/env"
-eval "$(/home/charlie/.local/bin/mise activate zsh)"
+#export PATH="$PATH:$HOME/.atuin/bin"
+#eval "$(atuin init zsh)"
