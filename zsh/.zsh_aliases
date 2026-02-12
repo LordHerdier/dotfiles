@@ -45,6 +45,12 @@ alias path="realpath"                                           # Alias for real
 
 
 ###############################################################################
+# Nix shortcuts
+###############################################################################
+alias nix-rebuild='sudo nixos-rebuild switch --flake /etc/nixos#Charlie-Laptop'      # Rebuild and switch with flake
+alias nix-update-dotfiles=sudo nix flake lock --update-input dotfiles /etc/nixos'    # Tell the flake to get the latest commit
+
+###############################################################################
 # Coreutils/distro replacements (Replace ls with exa, and apt with nala)
 ###############################################################################
 alias ls="exa -gh --group-directories-first"                   # List files in long format with hidden files, group directories first
