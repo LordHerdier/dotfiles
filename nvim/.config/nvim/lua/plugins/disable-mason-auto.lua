@@ -20,6 +20,6 @@ return {
 
   -- Optional: if you want to fully prevent Mason from doing anything on startup.
   -- Comment this in if it still nags.
-  -- { "williamboman/mason.nvim", enabled = false },
-  -- { "williamboman/mason-lspconfig.nvim", enabled = false },
+  { "williamboman/mason.nvim", enabled = false },
+  { "williamboman/mason-lspconfig.nvim", enabled = false },
 }
