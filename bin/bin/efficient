@@ -2,8 +2,8 @@
 
 # ~~~ ACTIVATION MAGIC ~~~
 # Point to your venv’s python directly—no need to source every little thing.
-VENV_PYTHON="/home/charlie/work/efficient/venv/bin/python"
-SCRIPT_PATH="/home/charlie/work/efficient/efficient_cli.py"
+VENV_PYTHON="$HOME/work/efficient/venv/bin/python"
+SCRIPT_PATH="$HOME/work/efficient/efficient_cli.py"
 
 # If, for some cosmic reason, that python binary isn’t there, bail out:
 if [ ! -x "$VENV_PYTHON" ]; then
