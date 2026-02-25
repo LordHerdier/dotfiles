@@ -16,7 +16,7 @@
           "background": "#3465a4",
           "foreground": "#e4e4e4",
           "powerline_symbol": "\ue0b0",
-          "properties": {
+          "options": {
             "home_icon": "~",
             "style": "full"
           },
@@ -34,9 +34,8 @@
           ],
           "foreground": "#000000",
           "powerline_symbol": "\ue0b0",
-          "properties": {
+          "options": {
             "branch_icon": "\uf126 ",
-            "fetch_stash_count": true,
             "fetch_status": true,
             "fetch_upstream_icon": true
           },
@@ -55,7 +54,7 @@
           "foreground": "#ffffff",
           "invert_powerline": true,
           "powerline_symbol": "\ue0b2",
-          "properties": {
+          "options": {
             "fetch_version": true
           },
           "style": "powerline",
@@ -67,7 +66,7 @@
           "foreground": "#111111",
           "invert_powerline": true,
           "powerline_symbol": "\ue0b2",
-          "properties": {
+          "options": {
             "fetch_version": true
           },
           "style": "powerline",
@@ -79,7 +78,7 @@
           "foreground": "#111111",
           "invert_powerline": true,
           "powerline_symbol": "\ue0b2",
-          "properties": {
+          "options": {
             "fetch_version": true
           },
           "style": "powerline",
@@ -91,7 +90,7 @@
           "foreground": "#111111",
           "invert_powerline": true,
           "powerline_symbol": "\ue0b2",
-          "properties": {
+          "options": {
             "display_mode": "files",
             "fetch_virtual_env": false
           },
@@ -104,7 +103,7 @@
           "foreground": "#ffffff",
           "invert_powerline": true,
           "powerline_symbol": "\ue0b2",
-          "properties": {
+          "options": {
             "display_mode": "files",
             "fetch_version": true
           },
@@ -117,7 +116,7 @@
           "foreground": "#ffffff",
           "invert_powerline": true,
           "powerline_symbol": "\ue0b2",
-          "properties": {
+          "options": {
             "display_mode": "files",
             "fetch_version": false
           },
@@ -133,7 +132,7 @@
           "foreground": "#ffffff",
           "invert_powerline": true,
           "powerline_symbol": "\ue0b2",
-          "properties": {
+          "options": {
             "display_default": false
           },
           "style": "powerline",
@@ -166,7 +165,7 @@
           "foreground": "#d3d7cf",
           "invert_powerline": true,
           "powerline_symbol": "\ue0b2",
-          "properties": {
+          "options": {
             "always_enabled": true
           },
           "style": "powerline",
@@ -212,5 +211,5 @@
   ],
   "console_title_template": "{{ .Shell }} in {{ .Folder }}",
   "final_space": true,
-  "version": 3
+  "version": 4
 }
