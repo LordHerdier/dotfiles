@@ -1,17 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/JanDeDobbeleer/oh-my-posh/main/themes/schema.json",
-  "transient_prompt": {
-    "background": "transparent",
-    "foreground": "#d2cb04",
-    "template": "$ "
-  },
   "blocks": [
     {
       "alignment": "left",
       "segments": [
         {
           "foreground": "#F1FA8C",
-          "properties": {
+          "options": {
             "style": "folder"
           },
           "style": "diamond",
@@ -20,7 +15,7 @@
         },
         {
           "foreground": "#43CCEA",
-          "properties": {
+          "options": {
             "branch_icon": ""
           },
           "style": "diamond",
@@ -41,9 +36,9 @@
       "newline": true,
       "segments": [
         {
-          "foreground": "#d2cb04",
+          "foreground": "#FFFFFF",
           "style": "plain",
-          "template": "$ ",
+          "template": ">",
           "type": "text"
         }
       ],
@@ -51,5 +46,5 @@
     }
   ],
   "final_space": true,
-  "version": 3
+  "version": 4
 }

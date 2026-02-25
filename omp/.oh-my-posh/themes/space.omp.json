@@ -6,7 +6,7 @@
       "segments": [
         {
           "foreground": "#26C6DA",
-          "properties": {
+          "options": {
             "macos": "mac"
           },
           "style": "plain",
@@ -21,7 +21,7 @@
         },
         {
           "foreground": "lightGreen",
-          "properties": {
+          "options": {
             "style": "folder"
           },
           "style": "plain",
@@ -29,9 +29,8 @@
           "type": "path"
         },
         {
-          "properties": {
-            "branch_icon": "",
-            "fetch_stash_count": true
+          "options": {
+            "branch_icon": ""
           },
           "style": "plain",
           "template": "<#ffffff>on</> {{ .HEAD }}{{ if gt .StashCount 0 }} \ueb4b {{ .StashCount }}{{ end }} ",
@@ -83,5 +82,5 @@
       "type": "prompt"
     }
   ],
-  "version": 3
+  "version": 4
 }
