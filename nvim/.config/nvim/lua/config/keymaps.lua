@@ -117,22 +117,22 @@ for _, mode in ipairs({ "v", "x", "o" }) do
   map(mode, "ge", "gj", opts) -- wrapped down
 end
 -- Window splitting
---map("n", "su", ":set nosplitbelow<CR>:split<CR>:set splitbelow<CR>", { desc = "Split up" })
---map("n", "se", ":set splitbelow<CR>:split<CR>", { desc = "Split down" })
---map("n", "sn", ":set nosplitright<CR>:vsplit<CR>:set splitright<CR>", { desc = "Split left" })
---map("n", "si", ":set splitright<CR>:vsplit<CR>", { desc = "Split right" })
+map("n", "su", ":set nosplitbelow<CR>:split<CR>:set splitbelow<CR>", { desc = "Split up" })
+map("n", "se", ":set splitbelow<CR>:split<CR>", { desc = "Split down" })
+map("n", "sn", ":set nosplitright<CR>:vsplit<CR>:set splitright<CR>", { desc = "Split left" })
+map("n", "si", ":set splitright<CR>:vsplit<CR>", { desc = "Split right" })
 
 -- Window resizing with arrow keys
---map("n", "<Up>", ":res +5<CR>", { desc = "Increase window height" })
---map("n", "<Down>", ":res -5<CR>", { desc = "Decrease window height" })
---map("n", "<Left>", ":vertical resize-5<CR>", { desc = "Decrease window width" })
---map("n", "<Right>", ":vertical resize+5<CR>", { desc = "Increase window width" })
+map("n", "<Up>", ":res +5<CR>", { desc = "Increase window height" })
+map("n", "<Down>", ":res -5<CR>", { desc = "Decrease window height" })
+map("n", "<Left>", ":vertical resize-5<CR>", { desc = "Decrease window width" })
+map("n", "<Right>", ":vertical resize+5<CR>", { desc = "Increase window width" })
 
 -- Window layout changes
---map("n", "sh", "<C-w>t<C-w>K", { desc = "Change to horizontal layout" })
---map("n", "sv", "<C-w>t<C-w>H", { desc = "Change to vertical layout" })
---map("n", "srh", "<C-w>b<C-w>K", { desc = "Rotate to horizontal" })
---map("n", "srv", "<C-w>b<C-w>H", { desc = "Rotate to vertical" })
+map("n", "sh", "<C-w>t<C-w>K", { desc = "Change to horizontal layout" })
+map("n", "sv", "<C-w>t<C-w>H", { desc = "Change to vertical layout" })
+map("n", "srh", "<C-w>b<C-w>K", { desc = "Rotate to horizontal" })
+map("n", "srv", "<C-w>b<C-w>H", { desc = "Rotate to vertical" })
 
 -- Close window below
 --map("n", "<leader>q", "<C-w>j:q<CR>", { desc = "Close window below" })
