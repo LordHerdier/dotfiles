@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# loadproject - fuzzy-select a .vtz program and deploy it to a Crestron device
+# Usage: loadproject <device>
+
+set -euo pipefail
+
+PROGRAMS_DIR="${HOME}/work/classroom-production/programs"
+
+# ── argument check ────────────────────────────────────────────────────────────
+if [[ $# -lt 1 ]]; then
+    echo "Usage: loadproject <device>" >&2
+    exit 1
+fi
+
+DEVICE="$1"
+
+# ── dependency check ──────────────────────────────────────────────────────────
+for cmd in fzf sshpass pass scp ssh; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "error: '$cmd' is not installed or not in PATH" >&2
+        exit 1
+    fi
+done
+
+# ── fuzzy-select .vtz file ────────────────────────────────────────────────────
+if [[ ! -d "$PROGRAMS_DIR" ]]; then
+    echo "error: programs directory not found: $PROGRAMS_DIR" >&2
+    exit 1
+fi
+
+FILE="$(find "$PROGRAMS_DIR" -name '*.vtz' -printf '%P\n' 2>/dev/null \
+    | sort \
+    | fzf --prompt="program > " \
+          --header="Select a .vtz to deploy to ${DEVICE}" \
+          --delimiter='/' --with-nth=-1 \
+          --preview="echo ${PROGRAMS_DIR}/{}" \
+          --preview-window="right:40%:wrap" \
+          --height=40% --border \
+    || true)"
+
+if [[ -z "$FILE" ]]; then
+    echo "No file selected — aborting." >&2
+    exit 0
+fi
+
+FILE_PATH="${PROGRAMS_DIR}/${FILE}"
+
+# ── fetch password once ───────────────────────────────────────────────────────
+PASS="$(pass show crestron/creds/password)"
+
+# ── deploy ────────────────────────────────────────────────────────────────────
+echo "→ uploading ${FILE} to ${DEVICE}…"
+sshpass -p "$PASS" scp \
+    -o LogLevel=ERROR \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    "$FILE_PATH" "admin@${DEVICE}:/display"
+
+echo "→ running projectload on ${DEVICE}…"
+sshpass -p "$PASS" ssh \
+    -o LogLevel=ERROR \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    "admin@${DEVICE}" -- projectload
+
+echo "✓ done"

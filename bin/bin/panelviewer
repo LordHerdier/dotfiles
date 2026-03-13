@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+# ~~~ ACTIVATION MAGIC ~~~
+# Point directly to the panelviewer venv python.
+VENV_PYTHON="$HOME/work/panelviewer/venv/bin/python"
+
+# If the venv python isn't there, bail dramatically.
+if [ ! -x "$VENV_PYTHON" ]; then
+  echo "Whoa—can't find the venv python at $VENV_PYTHON" >&2
+  exit 1
+fi
+
+# Run panelviewer as a module, forwarding all args.
+PYTHONPATH="$HOME/work/panelviewer/src"
+exec "$VENV_PYTHON" -m panelviewer "$@"
