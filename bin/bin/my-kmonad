@@ -3,12 +3,12 @@ set -euo pipefail
 
 case "${1:-}" in
 start)
-  systemctl start kmonad-myKMonadOutput.service || true
   systemctl start kmonad-myKMonadOutput.path || true
+  systemctl start kmonad-myKMonadOutput.service || true
   ;;
 stop)
-  systemctl stop kmonad-myKMonadOutput.service
-  systemctl stop kmonad-myKMonadOutput.path
+  systemctl stop kmonad-myKMonadOutput.path || true
+  systemctl stop kmonad-myKMonadOutput.service || true
   ;;
 *)
   echo "Usage: my-kmonad {start|stop}" >&2
