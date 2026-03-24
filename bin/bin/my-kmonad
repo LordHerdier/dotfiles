@@ -2,16 +2,16 @@
 set -euo pipefail
 
 case "${1:-}" in
-  start)
-    systemctl start kmonad-myKMonadOutput.service
-    systemctl start kmonad-myKMonadOutput.path
-    ;;
-  stop)
-    systemctl stop kmonad-myKMonadOutput.service
-    systemctl stop kmonad-myKMonadOutput.path
-    ;;
-  *)
-    echo "Usage: my-kmonad {start|stop}" >&2
-    exit 1
-    ;;
+start)
+  systemctl start kmonad-myKMonadOutput.service || true
+  systemctl start kmonad-myKMonadOutput.path || true
+  ;;
+stop)
+  systemctl stop kmonad-myKMonadOutput.service
+  systemctl stop kmonad-myKMonadOutput.path
+  ;;
+*)
+  echo "Usage: my-kmonad {start|stop}" >&2
+  exit 1
+  ;;
 esac
