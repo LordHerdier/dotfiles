@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# ans - ansible wrapper for inframanagement
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLAYBOOK_DIR="$SCRIPT_DIR/playbooks"
+INVENTORY="$SCRIPT_DIR/inventory/hosts.yml"
+
+# defaults
+VAULT_PASS=true
+BECOME_PASS=false
+LIMIT=""
+EXTRA_ARGS=()
+
+usage() {
+  cat <<EOF
+Usage: ans [options] [-- extra ansible-playbook args]
+
+Options:
+  -v, --no-vault     disable --ask-vault-pass (enabled by default)
+  -b, --become       enable --ask-become-pass (disabled by default)
+  -l, --limit HOSTS  pass --limit HOSTS to ansible-playbook
+  -h, --help         show this help
+
+Examples:
+  ans
+  ans -b
+  ans -v -l caddy
+  ans -- --tags deploy
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v|--no-vault)  VAULT_PASS=false; shift ;;
+    -b|--become)    BECOME_PASS=true; shift ;;
+    -l|--limit)     LIMIT="$2"; shift 2 ;;
+    -h|--help)      usage; exit 0 ;;
+    --)             shift; EXTRA_ARGS+=("$@"); break ;;
+    *)              echo "Unknown option: $1" >&2; usage; exit 1 ;;
+  esac
+done
+
+# pick playbook via fzf
+# build a list of paths relative to playbooks/ for display, but track full paths
+mapfile -t PLAYBOOKS < <(find "$PLAYBOOK_DIR" -name '*.yml' | sort)
+
+if [[ ${#PLAYBOOKS[@]} -eq 0 ]]; then
+  echo "No playbooks found in $PLAYBOOK_DIR" >&2
+  exit 1
+fi
+
+# show paths relative to PLAYBOOK_DIR for cleaner fzf display
+SELECTED=$(printf '%s\n' "${PLAYBOOKS[@]}" \
+  | sed "s|$PLAYBOOK_DIR/||" \
+  | fzf --prompt="playbook> " --height=40% --border --layout=reverse) || {
+  echo "No playbook selected." >&2
+  exit 1
+}
+
+PLAYBOOK="$PLAYBOOK_DIR/$SELECTED"
+
+# assemble command
+CMD=(ansible-playbook -i "$INVENTORY" "$PLAYBOOK")
+
+[[ "$VAULT_PASS"  == true  ]] && CMD+=(--ask-vault-pass)
+[[ "$BECOME_PASS" == true  ]] && CMD+=(--ask-become-pass)
+[[ -n "$LIMIT"            ]] && CMD+=(--limit "$LIMIT")
+CMD+=("${EXTRA_ARGS[@]}")
+
+echo "» ${CMD[*]}" >&2
+exec "${CMD[@]}"
