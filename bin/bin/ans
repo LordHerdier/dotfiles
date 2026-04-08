@@ -2,9 +2,23 @@
 # ans - ansible wrapper for inframanagement
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLAYBOOK_DIR="$SCRIPT_DIR/playbooks"
-INVENTORY="$SCRIPT_DIR/inventory/hosts.yml"
+# walk up from $PWD looking for ansible.cfg
+find_repo_root() {
+  local dir="$PWD"
+  while [[ "$dir" != "/" ]]; do
+    [[ -f "$dir/ansible.cfg" ]] && {
+      echo "$dir"
+      return
+    }
+    dir="$(dirname "$dir")"
+  done
+  echo "Error: could not find ansible.cfg in $PWD or any parent directory" >&2
+  exit 1
+}
+
+REPO_ROOT="$(find_repo_root)"
+PLAYBOOK_DIR="$REPO_ROOT/playbooks"
+INVENTORY="$REPO_ROOT/inventory/hosts.yml"
 
 # defaults
 VAULT_PASS=true
@@ -32,17 +46,36 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -v|--no-vault)  VAULT_PASS=false; shift ;;
-    -b|--become)    BECOME_PASS=true; shift ;;
-    -l|--limit)     LIMIT="$2"; shift 2 ;;
-    -h|--help)      usage; exit 0 ;;
-    --)             shift; EXTRA_ARGS+=("$@"); break ;;
-    *)              echo "Unknown option: $1" >&2; usage; exit 1 ;;
+  -v | --no-vault)
+    VAULT_PASS=false
+    shift
+    ;;
+  -b | --become)
+    BECOME_PASS=true
+    shift
+    ;;
+  -l | --limit)
+    LIMIT="$2"
+    shift 2
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  --)
+    shift
+    EXTRA_ARGS+=("$@")
+    break
+    ;;
+  *)
+    echo "Unknown option: $1" >&2
+    usage
+    exit 1
+    ;;
   esac
 done
 
 # pick playbook via fzf
-# build a list of paths relative to playbooks/ for display, but track full paths
 mapfile -t PLAYBOOKS < <(find "$PLAYBOOK_DIR" -name '*.yml' | sort)
 
 if [[ ${#PLAYBOOKS[@]} -eq 0 ]]; then
@@ -50,22 +83,20 @@ if [[ ${#PLAYBOOKS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-# show paths relative to PLAYBOOK_DIR for cleaner fzf display
-SELECTED=$(printf '%s\n' "${PLAYBOOKS[@]}" \
-  | sed "s|$PLAYBOOK_DIR/||" \
-  | fzf --prompt="playbook> " --height=40% --border --layout=reverse) || {
+SELECTED=$(printf '%s\n' "${PLAYBOOKS[@]}" |
+  sed "s|$PLAYBOOK_DIR/||" |
+  fzf --prompt="playbook> " --height=40% --border --layout=reverse) || {
   echo "No playbook selected." >&2
   exit 1
 }
 
 PLAYBOOK="$PLAYBOOK_DIR/$SELECTED"
 
-# assemble command
 CMD=(ansible-playbook -i "$INVENTORY" "$PLAYBOOK")
 
-[[ "$VAULT_PASS"  == true  ]] && CMD+=(--ask-vault-pass)
-[[ "$BECOME_PASS" == true  ]] && CMD+=(--ask-become-pass)
-[[ -n "$LIMIT"            ]] && CMD+=(--limit "$LIMIT")
+[[ "$VAULT_PASS" == true ]] && CMD+=(--ask-vault-pass)
+[[ "$BECOME_PASS" == true ]] && CMD+=(--ask-become-pass)
+[[ -n "$LIMIT" ]] && CMD+=(--limit "$LIMIT")
 CMD+=("${EXTRA_ARGS[@]}")
 
 echo "» ${CMD[*]}" >&2
