@@ -1,5 +1,4 @@
-#!y
-/bin/bash
+#/usr/bin/env bash
 
 # Extracts a compressed file
 
