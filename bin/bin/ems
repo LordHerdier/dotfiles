@@ -1,0 +1,1034 @@
+#!/usr/bin/env bash
+# ems-availability.sh — Query room availability from SIUE EMS web interface
+#
+# Does NOT use the restricted EMS API — uses the same endpoints the browser does.
+# Session cookies + CSRF token expire with your browser session; re-capture when
+# you get auth errors.
+#   DevTools → Network → filter "AnonymousServersApi" → right-click any request
+#   → Copy as cURL → extract cookie values + dea-CSRFToken header value.
+
+set -euo pipefail
+
+# ─── Configuration ────────────────────────────────────────────────────────────
+
+EMS_BASE="https://ems.siue.edu/EMSWebApp"
+BROWSE_PAGE="$EMS_BASE/BrowseForSpace.aspx"
+TIMEZONE_ID=64  # 64 = Central Time
+UA="Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0"
+
+# Cache settings — files live in ~/.cache/ems/
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ems"
+CACHE_TTL_ROOMS=604800   # 7 days   — room list changes maybe once a semester
+CACHE_TTL_BOOKINGS=3600  # 1 hour   — bookings change during the day
+CACHE_TTL_DETAIL=900     # 15 minutes — single-room detail
+
+# ─── Session credentials ───────────────────────────────────────────────────────
+
+IDMSESSID=""
+ASPNET_SESSION=""
+ANTIXSRF_TOKEN=""
+CSRF_TOKEN=""   # dea-CSRFToken header value (UUID) — NOT the same as __AntiXsrfToken cookie
+
+# ─── Defaults ─────────────────────────────────────────────────────────────────
+
+START_DATE=""
+END_DATE=""
+LOCATION_ID="-1"
+ROOM_FILTER=""
+ROOM_ID=""
+ROOM_CODE=""      # human-friendly code like "FH0111" — resolved to numeric ID at runtime
+ROOM_CODES=""     # comma-separated list for multi-room comparison
+BUILDING_CODE=""  # e.g. "FH" — resolved to numeric building ID for filtering
+FROM_TIME=""      # HH:MM — only show slots at or after this time
+UNTIL_TIME=""     # HH:MM — only show slots at or before this time
+MIN_FREE=0        # minimum free gap duration in minutes
+FREE_ONLY=false
+CHECK_NOW=false   # --now: exit 0 if room is currently free, 1 if booked
+SHOW_BOOKINGS=false
+JSON_OUTPUT=false
+QUIET=false
+SESSION_FILE=""
+SAVE_SESSION=""
+NO_CACHE=false
+CLEAR_CACHE=false
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+die()  { echo "ERROR: $*" >&2; exit 1; }
+info() { $QUIET || echo "$*" >&2; }
+
+usage() {
+    cat <<EOF
+Usage: ems [OPTIONS]
+
+Query SIUE EMS room availability via the web interface (no restricted API needed).
+
+Options:
+  -s, --start DATE        Start date/time (default: today 00:00)
+                          Formats: "2026-05-01", "2026-05-01 08:00"
+  -e, --end DATE          End date/time (default: start + 1 day)
+  -l, --location ID       Building ID filter (-1 = all, default: -1)
+      --building CODE     Filter by building code, e.g. FH, ADW, SE, PH
+      --room CODE         Show schedule for a room by code, e.g. FH0111
+      --rooms CODE,...    Show schedules for multiple rooms, comma-separated
+      --room-id ID        Show schedule for a room by numeric ID
+  -r, --filter PATTERN    Filter room/building list output (grep regex)
+      --from HH:MM        Only show slots starting at or after this time
+      --until HH:MM       Only show slots ending at or before this time
+      --min-free MINS     Only show free slots/rooms with at least N minutes free
+      --now               Check if room(s) are free right now
+                          Exit 0 = free, 1 = booked (for scripting)
+  -f, --free              Show only rooms with NO bookings in the window
+  -b, --bookings          Show bookings list
+  -j, --json              Raw JSON output (unwrapped)
+  -q, --quiet             Suppress progress output
+      --session FILE      Load session credentials from file (default: ~/.ems_session)
+      --save-session FILE Save entered credentials to file
+      --no-cache          Skip cache and fetch live data
+      --clear-cache       Delete all cached responses and exit
+  -h, --help              Show this help
+
+Session file format (~/.ems_session):
+  IDMSESSID=<value>
+  ASPNET_SESSION=<value>
+  ANTIXSRF_TOKEN=<value>
+  CSRF_TOKEN=<value>
+
+  CSRF_TOKEN is the "dea-CSRFToken:" request header value (a UUID like a2492c4e-...).
+  It is DIFFERENT from the __AntiXsrfToken cookie — both visible in Copy as cURL output.
+
+Examples:
+  # Check if a room is free right now (exit 0=free, 1=booked)
+  ems --room FH0111 --now
+  ems --rooms FH0111,SE2268 --now
+
+  # Use in a script
+  if ems --room FH0111 --now -q; then
+      echo "Room is free, heading over"
+  fi
+
+  # All free rooms today
+  $(basename "$0") --free
+
+  # Free rooms in Founders Hall with at least 90 min free, 13:00–18:00
+  $(basename "$0") --building FH --free --from 13:00 --until 18:00 --min-free 90
+
+  # Schedule for a single room today
+  $(basename "$0") --room FH0111
+
+  # Schedule for multiple rooms, filtered to afternoon
+  $(basename "$0") --rooms FH0111,SE2268,ADW1104 --from 12:00 --until 17:00
+
+  # Free rooms on a specific day
+  $(basename "$0") -s "2026-05-01" --free --building SE
+
+  # Show all bookings today
+  $(basename "$0") --bookings
+
+  # Get all room codes as JSON for scripting
+  $(basename "$0") -j -q | jq '[.[] | {id: .Id, code: .Code, name: .Name}]'
+EOF
+    exit 0
+}
+
+# ─── Argument parsing ─────────────────────────────────────────────────────────
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -s|--start)        START_DATE="$2";     shift 2 ;;
+        -e|--end)          END_DATE="$2";       shift 2 ;;
+        -l|--location)     LOCATION_ID="$2";    shift 2 ;;
+        -r|--filter)       ROOM_FILTER="$2";    shift 2 ;;
+           --building)     BUILDING_CODE="$2";  shift 2 ;;
+           --room)         ROOM_CODE="$2";      shift 2 ;;
+           --rooms)        ROOM_CODES="$2";     shift 2 ;;
+           --room-id)      ROOM_ID="$2";        shift 2 ;;
+           --from)         FROM_TIME="$2";      shift 2 ;;
+           --until)        UNTIL_TIME="$2";     shift 2 ;;
+           --min-free)     MIN_FREE="$2";       shift 2 ;;
+        -f|--free)         FREE_ONLY=true;      shift   ;;
+           --now)          CHECK_NOW=true;      shift   ;;
+        -b|--bookings)     SHOW_BOOKINGS=true;  shift   ;;
+        -j|--json)         JSON_OUTPUT=true;    shift   ;;
+        -q|--quiet)        QUIET=true;          shift   ;;
+           --session)      SESSION_FILE="$2";   shift 2 ;;
+           --save-session) SAVE_SESSION="$2";   shift 2 ;;
+           --no-cache)     NO_CACHE=true;       shift   ;;
+           --clear-cache)  CLEAR_CACHE=true;    shift   ;;
+        -h|--help)         usage ;;
+        *) die "Unknown option: $1 (try --help)" ;;
+    esac
+done
+
+# ─── Session loading ──────────────────────────────────────────────────────────
+
+load_session() {
+    local file="$1"
+    [[ -f "$file" ]] || return 1
+    local key val
+    while IFS='=' read -r key val; do
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${key// /}" ]]          && continue
+        key="${key// /}"
+        case "$key" in
+            IDMSESSID)      IDMSESSID="$val"      ;;
+            ASPNET_SESSION) ASPNET_SESSION="$val" ;;
+            ANTIXSRF_TOKEN) ANTIXSRF_TOKEN="$val" ;;
+            CSRF_TOKEN)     CSRF_TOKEN="$val"     ;;
+        esac
+    done < "$file"
+    return 0
+}
+
+save_session() {
+    local file="$1"
+    cat > "$file" <<EOF
+# EMS session credentials — regenerate when requests start failing
+# Captured: $(date)
+#
+# To refresh: DevTools → Network → any AnonymousServersApi request → Copy as cURL
+#   CSRF_TOKEN     = value of the "dea-CSRFToken:" request header (UUID)
+#   ANTIXSRF_TOKEN = "__AntiXsrfToken" value in the Cookie: header
+#   ASPNET_SESSION = "ASP.NET_SessionId" value in the Cookie: header
+#   IDMSESSID      = "IDMSESSID" value in the Cookie: header
+IDMSESSID=$IDMSESSID
+ASPNET_SESSION=$ASPNET_SESSION
+ANTIXSRF_TOKEN=$ANTIXSRF_TOKEN
+CSRF_TOKEN=$CSRF_TOKEN
+EOF
+    chmod 600 "$file"
+    echo "Session saved to $file" >&2
+}
+
+if [[ -n "$SESSION_FILE" ]]; then
+    load_session "$SESSION_FILE" || die "Session file not found: $SESSION_FILE"
+else
+    load_session "$HOME/.ems_session" || true
+fi
+
+# ─── Credential validation / interactive prompt ───────────────────────────────
+
+check_credentials() {
+    local missing=false
+    [[ -z "$IDMSESSID"      ]] && missing=true
+    [[ -z "$ASPNET_SESSION" ]] && missing=true
+    [[ -z "$ANTIXSRF_TOKEN" ]] && missing=true
+    [[ -z "$CSRF_TOKEN"     ]] && missing=true
+
+    if $missing; then
+        cat >&2 <<'PROMPT'
+
+Missing session credentials. To obtain them:
+
+  1. Open https://ems.siue.edu/EMSWebApp/BrowseForSpace.aspx in your browser
+  2. Click on any room to open its detail panel
+  3. Click the "Availability" tab — this triggers the API call we need
+  4. Open DevTools (F12) → Network tab
+  5. Find the POST request named "GetLocationDetailsAvailability"
+  6. Right-click it → Copy → Copy as cURL
+
+  Then paste the entire curl command below (paste + press Enter, then Ctrl-D):
+
+PROMPT
+
+        # Read the full pasted curl command (may be multi-line)
+        local curl_input
+        curl_input=$(cat)
+
+        # Collapse backslash-newline continuations from multi-line curl paste
+        local flat
+        flat=$(echo "$curl_input" | tr -d '\\\n')
+
+        # Parse CSRF token from -H 'dea-CSRFToken: <uuid>' header
+        local csrf
+        csrf=$(echo "$flat" | grep -oP "dea-CSRFToken:\s*\K[a-f0-9-]{36}")
+
+        # Parse cookies — they're all in one Cookie: header
+        local cookie_header_val
+        cookie_header_val=$(echo "$flat" \
+            | grep -oP "Cookie:\s*\K[^'\"\\\\]+" \
+            | head -1)
+
+        local idmsessid aspnet antixsrf
+        idmsessid=$(echo "$cookie_header_val" \
+            | grep -oP "(?<=IDMSESSID=)[^;]+")
+        aspnet=$(echo "$cookie_header_val" \
+            | grep -oP "(?<=ASP\.NET_SessionId=)[^;]+")
+        antixsrf=$(echo "$cookie_header_val" \
+            | grep -oP "(?<=__AntiXsrfToken=)[^;]+")
+
+        # Trim whitespace
+        csrf="${csrf// /}"
+        idmsessid="${idmsessid// /}"
+        aspnet="${aspnet// /}"
+        antixsrf="${antixsrf// /}"
+
+        # Report what we found / what's still missing
+        local parse_ok=true
+        echo >&2
+        if [[ -n "$csrf"       ]]; then echo "  ✓ dea-CSRFToken:    $csrf" >&2
+        else echo "  ✗ dea-CSRFToken:    not found" >&2; parse_ok=false; fi
+        if [[ -n "$idmsessid"  ]]; then echo "  ✓ IDMSESSID:        ${idmsessid:0:16}…" >&2
+        else echo "  ✗ IDMSESSID:        not found" >&2; parse_ok=false; fi
+        if [[ -n "$aspnet"     ]]; then echo "  ✓ ASP.NET_SessionId: $aspnet" >&2
+        else echo "  ✗ ASP.NET_SessionId: not found" >&2; parse_ok=false; fi
+        if [[ -n "$antixsrf"   ]]; then echo "  ✓ __AntiXsrfToken:  $antixsrf" >&2
+        else echo "  ✗ __AntiXsrfToken:  not found" >&2; parse_ok=false; fi
+        echo >&2
+
+        if ! $parse_ok; then
+            echo "  Some tokens could not be parsed from the pasted curl command." >&2
+            echo "  Please enter any missing values manually:" >&2
+            echo >&2
+            [[ -n "$csrf"      ]] || read -rp "  dea-CSRFToken UUID: " csrf
+            [[ -n "$idmsessid" ]] || read -rp "  IDMSESSID:          " idmsessid
+            [[ -n "$aspnet"    ]] || read -rp "  ASP.NET_SessionId:  " aspnet
+            [[ -n "$antixsrf"  ]] || read -rp "  __AntiXsrfToken:    " antixsrf
+        fi
+
+        # Only set globals if they were missing to start with — don't overwrite
+        # values that were already loaded from a partial session file
+        [[ -z "$CSRF_TOKEN"     ]] && CSRF_TOKEN="$csrf"
+        [[ -z "$IDMSESSID"      ]] && IDMSESSID="$idmsessid"
+        [[ -z "$ASPNET_SESSION" ]] && ASPNET_SESSION="$aspnet"
+        [[ -z "$ANTIXSRF_TOKEN" ]] && ANTIXSRF_TOKEN="$antixsrf"
+
+        local save_to="${SAVE_SESSION:-}"
+        if [[ -z "$save_to" ]]; then
+            read -rp "  Save to ~/.ems_session? [y/N] " yn
+            [[ "$yn" =~ ^[Yy] ]] && save_to="$HOME/.ems_session"
+        fi
+        [[ -n "$save_to" ]] && save_session "$save_to"
+        echo >&2
+    fi
+
+    [[ -n "$IDMSESSID"      ]] || die "IDMSESSID is empty"
+    [[ -n "$ASPNET_SESSION" ]] || die "ASPNET_SESSION is empty"
+    [[ -n "$ANTIXSRF_TOKEN" ]] || die "ANTIXSRF_TOKEN is empty"
+    [[ -n "$CSRF_TOKEN"     ]] || die "CSRF_TOKEN (dea-CSRFToken) is empty"
+}
+
+check_credentials
+[[ -n "$SAVE_SESSION" ]] && save_session "$SAVE_SESSION"
+
+# ─── Cache helpers ────────────────────────────────────────────────────────────
+
+cache_init() {
+    mkdir -p "$CACHE_DIR"
+    chmod 700 "$CACHE_DIR"
+}
+
+# Filesystem-safe key: hash the endpoint + payload into a short filename
+cache_path() {
+    local endpoint="$1" payload="$2"
+    local key
+    key=$(printf '%s\n%s' "$endpoint" "$payload" | md5sum | cut -c1-16)
+    echo "${CACHE_DIR}/${endpoint//\//_}_${key}.json"
+}
+
+# Returns 0 and prints cached content if fresh, else returns 1
+cache_get() {
+    local path="$1" ttl="$2"
+    [[ -f "$path" ]] || return 1
+    local age
+    age=$(( $(date +%s) - $(date -r "$path" +%s 2>/dev/null || stat -c %Y "$path") ))
+    [[ "$age" -lt "$ttl" ]] || return 1
+    local remaining=$(( ttl - age ))
+    info "  (cached, expires in ${remaining}s)"
+    cat "$path"
+}
+
+cache_set() {
+    local path="$1"
+    # Read stdin, tee to cache file and stdout
+    tee "$path"
+    chmod 600 "$path"
+}
+
+cache_invalidate() {
+    local path="$1"
+    [[ -f "$path" ]] && rm -f "$path" && info "  (cache invalidated: $(basename "$path"))"
+}
+
+cache_clear() {
+    if [[ -d "$CACHE_DIR" ]]; then
+        rm -f "${CACHE_DIR}"/*.json
+        echo "Cache cleared: $CACHE_DIR" >&2
+    else
+        echo "No cache directory found at $CACHE_DIR" >&2
+    fi
+}
+
+# ─── HTTP helpers ─────────────────────────────────────────────────────────────
+
+cookie_header() {
+    printf 'IDMSESSID=%s; ASP.NET_SessionId=%s; __AntiXsrfToken=%s' \
+        "$IDMSESSID" "$ASPNET_SESSION" "$ANTIXSRF_TOKEN"
+}
+
+# TTL per endpoint
+_endpoint_ttl() {
+    case "$1" in
+        GetBrowseLocationsRooms)        echo "$CACHE_TTL_ROOMS"    ;;
+        GetBrowseLocationsBookings)     echo "$CACHE_TTL_BOOKINGS" ;;
+        GetLocationDetailsAvailability) echo "$CACHE_TTL_DETAIL"   ;;
+        *)                              echo 300 ;;
+    esac
+}
+
+ems_post() {
+    local endpoint="$1"
+    local payload="$2"
+    local ttl
+    ttl=$(_endpoint_ttl "$endpoint")
+    local cpath
+    cpath=$(cache_path "$endpoint" "$payload")
+
+    # Serve from cache if fresh and not bypassed
+    if ! $NO_CACHE; then
+        local cached
+        if cached=$(cache_get "$cpath" "$ttl"); then
+            echo "$cached"
+            return
+        fi
+    fi
+
+    info "  (fetching live: $endpoint)"
+    local response
+    response=$(curl -sf \
+        -X POST \
+        -A "$UA" \
+        -H "Accept: application/json, text/javascript, */*; q=0.01" \
+        -H "Content-Type: application/json; charset=utf-8" \
+        -H "dea-CSRFToken: ${CSRF_TOKEN}" \
+        -H "X-Requested-With: XMLHttpRequest" \
+        -H "Origin: https://ems.siue.edu" \
+        -H "Referer: ${BROWSE_PAGE}" \
+        -H "Cookie: $(cookie_header)" \
+        --data-raw "$payload" \
+        "${EMS_BASE}/AnonymousServersApi.aspx/${endpoint}") \
+        || { cache_invalidate "$cpath"
+             die "${endpoint} request failed — session may have expired
+  Delete ~/.ems_session and re-run to re-enter credentials"; }
+
+    # Detect silent redirect to login page — invalidate cache, don't store garbage
+    if echo "$response" | grep -q '<!DOCTYPE\|<html\|<HTML'; then
+        cache_invalidate "$cpath"
+        die "Got an HTML response from ${endpoint} — session has expired
+  Delete ~/.ems_session and re-run"
+    fi
+
+    # Unwrap ASP.NET envelope and write to cache + stdout
+    echo "$response" \
+        | jq '.d // . | if type=="string" then fromjson else . end' \
+        | cache_set "$cpath"
+}
+
+# ─── Date handling ────────────────────────────────────────────────────────────
+
+normalize_date() {
+    local input="$1"
+    case "$input" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+            echo "${input} 00:00:00" ;;
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9]:[0-9][0-9])
+            echo "${input}:00" ;;
+        *) echo "$input" ;;
+    esac
+}
+
+to_iso() {
+    # Local datetime → UTC ISO 8601 for GetLocationDetailsAvailability
+    date -d "$1" --utc '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null \
+        || date -j -f '%Y-%m-%d %H:%M:%S' "$1" -u '+%Y-%m-%dT%H:%M:%S.000Z'
+}
+
+if [[ -z "$START_DATE" ]]; then
+    START_DATE=$(date '+%Y-%m-%d 00:00:00')
+else
+    START_DATE=$(normalize_date "$START_DATE")
+fi
+
+if [[ -z "$END_DATE" ]]; then
+    local_date="${START_DATE%% *}"
+    END_DATE=$(date -d "${local_date} + 1 day" '+%Y-%m-%d 00:00:00' 2>/dev/null \
+        || date -v+1d -j -f '%Y-%m-%d' "$local_date" '+%Y-%m-%d 00:00:00')
+else
+    END_DATE=$(normalize_date "$END_DATE")
+fi
+
+# ─── Payloads ─────────────────────────────────────────────────────────────────
+
+browse_payload() {
+    printf '{"filterData":{"filters":[{"filterName":"StartDate","value":"%s","displayValue":" ","filterType":3},{"filterName":"EndDate","value":"%s","filterType":3,"displayValue":""},{"filterName":"Locations","value":"%s","displayValue":"(all)","filterType":8},{"filterName":"TimeZone","value":"%s","displayValue":"","filterType":2}]}}' \
+        "$START_DATE" "$END_DATE" "$LOCATION_ID" "$TIMEZONE_ID"
+}
+
+detail_payload() {
+    printf '{"roomId":%s,"start":"%s","end":"%s"}' \
+        "$1" "$(to_iso "$START_DATE")" "$(to_iso "$END_DATE")"
+}
+
+# ─── jq helpers ───────────────────────────────────────────────────────────────
+
+require_jq() {
+    command -v jq &>/dev/null || die "jq is required  (pacman -S jq)"
+}
+
+# Build a flat array of all rooms across all buildings, with building name joined in
+# Output fields per room: Id, Description, Code, Capacity, BuildingId, BuildingName
+rooms_flat() {
+    local data="$1"
+    echo "$data" | jq '[
+        .Buildings[] |
+        { bname: .Description, bcode: .Code, bid: .Id } as $b |
+        .Rooms[] |
+        {
+            Id:           .Id,
+            Name:         .Description,
+            Code:         .Code,
+            Capacity:     .Capacity,
+            BuildingId:   .BuildingID,
+            BuildingName: $b.bname,
+            BuildingCode: $b.bcode
+        }
+    ]'
+}
+
+# ─── Output: room list ────────────────────────────────────────────────────────
+
+print_rooms() {
+    local data="$1"
+    require_jq
+
+    local flat
+    flat=$(rooms_flat "$data")
+
+    if $JSON_OUTPUT; then echo "$flat" | jq .; return; fi
+
+    local count
+    count=$(echo "$flat" | jq 'length')
+
+    if $QUIET; then
+        echo "$flat" | jq -r '.[] | .Name' \
+            | { [[ -n "$ROOM_FILTER" ]] && grep -i "$ROOM_FILTER" || cat; }
+        return
+    fi
+
+    echo
+    echo "══════════════════════════════════════════════════════════════════"
+    printf "  EMS Rooms  │  %s  →  %s\n" "$START_DATE" "$END_DATE"
+    echo "══════════════════════════════════════════════════════════════════"
+    echo
+
+    echo "$flat" | jq -r '.[] |
+        [.Name, .BuildingName, (.Capacity | tostring), (.Id | tostring)] | @tsv' \
+        | { [[ -n "$ROOM_FILTER" ]] && grep -i "$ROOM_FILTER" || cat; } \
+        | awk -F'\t' '
+            BEGIN { printf "  %-44s %-28s %5s  %s\n","Room","Building","Cap","ID"
+                    printf "  %-44s %-28s %5s  %s\n","----","--------","---","--" }
+                  { printf "  %-44s %-28s %5s  %s\n",$1,$2,$3,$4 }'
+
+    echo
+    printf "  %s room(s)\n\n" "$count"
+}
+
+# ─── Output: bookings ─────────────────────────────────────────────────────────
+
+print_bookings() {
+    local bdata="$1"
+    local rdata="${2:-}"   # optional rooms data for name lookup
+    require_jq
+
+    if $JSON_OUTPUT; then echo "$bdata" | jq '.Bookings // .'; return; fi
+
+    # Build room-id → name map if we have rooms data
+    local room_map='{}'
+    if [[ -n "$rdata" ]]; then
+        room_map=$(rooms_flat "$rdata" | jq 'map({key: (.Id|tostring), value: .Name}) | from_entries')
+    fi
+
+    local count
+    count=$(echo "$bdata" | jq '.Bookings | length')
+
+    if $QUIET; then
+        echo "$bdata" | jq -r --argjson rm "$room_map" '
+            .Bookings[] |
+            (.EventStart | sub("T";" ") | .[0:16]) + "  " +
+            (.EventEnd   | sub("T";" ") | .[11:16]) + "  " +
+            ($rm[(.RoomId|tostring)] // ("Room " + (.RoomId|tostring))) + "  " +
+            .EventName' \
+            | { [[ -n "$ROOM_FILTER" ]] && grep -i "$ROOM_FILTER" || cat; }
+        return
+    fi
+
+    echo
+    echo "══════════════════════════════════════════════════════════════════"
+    printf "  EMS Bookings  │  %s  →  %s\n" "$START_DATE" "$END_DATE"
+    echo "══════════════════════════════════════════════════════════════════"
+    echo
+
+    echo "$bdata" | jq -r --argjson rm "$room_map" '
+        .Bookings[] |
+        [
+            .EventName,
+            ($rm[(.RoomId|tostring)] // ("Room " + (.RoomId|tostring))),
+            (.EventStart | sub("T";" ") | .[0:16]),
+            (.EventEnd   | sub("T";" ") | .[11:16])
+        ] | @tsv' \
+        | { [[ -n "$ROOM_FILTER" ]] && grep -i "$ROOM_FILTER" || cat; } \
+        | sort -t$'\t' -k3 \
+        | awk -F'\t' '
+            BEGIN { printf "  %-38s %-30s %-17s  %s\n","Event","Room","Start","End"
+                    printf "  %-38s %-30s %-17s  %s\n","-----","----","-----","---" }
+                  { printf "  %-38s %-30s %-17s  %s\n",$1,$2,$3,$4 }'
+
+    echo
+    printf "  %s booking(s)\n\n" "$count"
+}
+
+# ─── Output: free rooms ───────────────────────────────────────────────────────
+
+print_free_rooms() {
+    local rdata="$1"
+    local bdata="$2"
+    require_jq
+
+    # Set of room IDs that have a booking overlapping the time window
+    local from_m until_m
+    from_m=$(window_from); until_m=$(window_until)
+
+    local booked_ids
+    booked_ids=$(echo "$bdata" | jq \
+        --argjson from "$from_m" --argjson until "$until_m" '[
+        .Bookings[] |
+        ( .EventStart | .[11:16] | split(":") | (.[0]|tonumber)*60+(.[1]|tonumber) ) as $bs |
+        ( .EventEnd   | .[11:16] | split(":") | (.[0]|tonumber)*60+(.[1]|tonumber) ) as $be |
+        select($bs < $until and $be > $from) |
+        (.RoomId | tostring)
+    ] | unique')
+
+    # Flat room list minus booked ones
+    local free
+    free=$(rooms_flat "$rdata" | jq --argjson booked "$booked_ids" '
+        [.[] | select((.Id | tostring) | IN($booked[]) | not)]')
+
+    if $JSON_OUTPUT; then echo "$free" | jq .; return; fi
+
+    local count
+    count=$(echo "$free" | jq 'length')
+
+    if $QUIET; then
+        echo "$free" | jq -r '.[] | .Name' \
+            | { [[ -n "$ROOM_FILTER" ]] && grep -i "$ROOM_FILTER" || cat; }
+        return
+    fi
+
+    echo
+    echo "══════════════════════════════════════════════════════════════════"
+    printf "  Free Rooms  │  %s  →  %s\n" "$START_DATE" "$END_DATE"
+    echo "══════════════════════════════════════════════════════════════════"
+    echo
+
+    echo "$free" | jq -r '.[] |
+        [.Name, .BuildingName, (.Capacity | tostring), (.Id | tostring)] | @tsv' \
+        | { [[ -n "$ROOM_FILTER" ]] && grep -i "$ROOM_FILTER" || cat; } \
+        | awk -F'\t' '
+            BEGIN { printf "  %-44s %-28s %5s  %s\n","Room","Building","Cap","ID"
+                    printf "  %-44s %-28s %5s  %s\n","----","--------","---","--" }
+                  { printf "  %-44s %-28s %5s  %s\n",$1,$2,$3,$4 }'
+
+    echo
+    printf "  %s free room(s)\n\n" "$count"
+}
+
+# ─── Time window helpers ──────────────────────────────────────────────────────
+
+time_to_min() { local h m; IFS=: read -r h m <<< "$1"; echo $(( 10#$h * 60 + 10#$m )); }
+min_to_time() { printf '%02d:%02d' $(( $1 / 60 )) $(( $1 % 60 )); }
+window_from()  { [[ -n "$FROM_TIME"  ]] && time_to_min "$FROM_TIME"  || echo 0;    }
+window_until() { [[ -n "$UNTIL_TIME" ]] && time_to_min "$UNTIL_TIME" || echo 1320; }  # 22:00
+
+# ─── Core gap renderer ────────────────────────────────────────────────────────
+# Reads TSV "HH:MM\tHH:MM" booking lines from stdin (sorted).
+# Respects FROM_TIME, UNTIL_TIME, MIN_FREE globals.
+
+render_schedule() {
+    local from_m until_m
+    from_m=$(window_from); until_m=$(window_until)
+
+    awk -F'\t' \
+        -v from="$from_m" -v until="$until_m" -v min_free="$MIN_FREE" '
+        function to_min(t,  a) { split(t,a,":"); return a[1]*60+a[2] }
+        function fmt(m)        { return sprintf("%02d:%02d", m/60, m%60) }
+        function print_free(s, e,   dur) {
+            if (s < from)  s = from
+            if (e > until) e = until
+            dur = e - s
+            if (s >= e || dur < min_free) return
+            printf "  \033[32m%-6s  %-6s  FREE   (%d min)\033[0m\n", fmt(s), fmt(e), dur
+        }
+        function print_booked(s, e) {
+            if (s >= until || e <= from) return
+            printf "  \033[31m%-6s  %-6s  BOOKED\033[0m\n", fmt(s), fmt(e)
+        }
+        BEGIN {
+            prev = from
+            printf "  %-6s  %-6s  %s\n", "Start", "End", "Status"
+            printf "  %-6s  %-6s  %s\n", "-----", "---", "------"
+        }
+        {
+            s = to_min($1); e = to_min($2)
+            if (s > prev) print_free(prev, s)
+            print_booked(s, e)
+            if (e > prev) prev = e
+        }
+        END { if (prev < until) print_free(prev, until) }
+    '
+}
+
+# ─── Output: single room detail ───────────────────────────────────────────────
+# $1 = raw API response, $2 = optional display name override
+
+print_detail() {
+    local data="$1" name_override="${2:-}"
+    require_jq
+
+    local bookings
+    bookings=$(echo "$data" | jq '
+        if .JsonData then (.JsonData | fromjson | .bookings // [])
+        elif type == "array" then .
+        else . end')
+
+    if $JSON_OUTPUT; then echo "$bookings" | jq .; return; fi
+
+    local room_name
+    if [[ -n "$name_override" ]]; then
+        room_name="$name_override"
+    else
+        room_name=$(echo "$bookings" \
+            | jq -r 'first(.[] | .Location) // "Room '"${ROOM_ID:-?}"'"' 2>/dev/null \
+            || echo "Room ${ROOM_ID:-?}")
+    fi
+
+    local query_date="${START_DATE%% *}"
+    local day_bookings
+    day_bookings=$(echo "$bookings" | jq --arg d "$query_date" '
+        [.[] | select(.Start | startswith($d))] | sort_by(.Start)')
+
+    local count
+    count=$(echo "$day_bookings" | jq 'length')
+
+    local window_str=""
+    [[ -n "$FROM_TIME" || -n "$UNTIL_TIME" ]] \
+        && window_str="  │  ${FROM_TIME:-open} – ${UNTIL_TIME:-close}"
+    [[ "$MIN_FREE" -gt 0 ]] && window_str+="  │  ≥${MIN_FREE} min free"
+
+    echo
+    echo "══════════════════════════════════════════════════════════════════"
+    printf "  %s\n" "$room_name"
+    printf "  %s%s\n" "$query_date" "$window_str"
+    echo "══════════════════════════════════════════════════════════════════"
+    echo
+
+    if [[ "$count" -eq 0 ]]; then
+        local from_m until_m gap
+        from_m=$(window_from); until_m=$(window_until); gap=$(( until_m - from_m ))
+        if [[ "$gap" -ge "$MIN_FREE" ]]; then
+            printf "  %-6s  %-6s  %s\n" "Start" "End" "Status"
+            printf "  %-6s  %-6s  %s\n" "-----" "---" "------"
+            printf "  \033[32m%-6s  %-6s  FREE   (%d min)\033[0m\n" \
+                "$(min_to_time "$from_m")" "$(min_to_time "$until_m")" "$gap"
+        else
+            echo "  No bookings, but no gap ≥ ${MIN_FREE} min in the requested window."
+        fi
+        echo; return
+    fi
+
+    echo "$day_bookings" \
+        | jq -r '.[] | [(.Start|.[11:16]), (.End|.[11:16])] | @tsv' \
+        | render_schedule
+
+    echo
+    printf "  %s booking(s) on %s\n\n" "$count" "$query_date"
+}
+
+# ─── Output: multi-room comparison ────────────────────────────────────────────
+
+print_multi_room() {
+    local codes="$1" rdata="$2"
+    require_jq
+
+    local IFS=','
+    local code_arr
+    read -ra code_arr <<< "$codes"
+
+    for code in "${code_arr[@]}"; do
+        code="${code// /}"
+        [[ -z "$code" ]] && continue
+
+        local rid rname
+        rid=$(resolve_room_code "$code" "$rdata")   # exits on failure
+        rname=$(echo "$rdata" | jq -r --arg id "$rid" '
+            .Buildings[].Rooms[] | select(.Id == ($id|tonumber)) | .Description' \
+            | head -1)
+
+        info "  Fetching detail for $code..."
+        local detail
+        detail=$(ems_post "GetLocationDetailsAvailability" "$(detail_payload "$rid")")
+        print_detail "$detail" "$rname"
+    done
+}
+
+# ─── Room code → numeric ID lookup ───────────────────────────────────────────
+# $1 = room code string, $2 = already-fetched rooms JSON
+
+resolve_room_code() {
+    local code="$1" rdata="$2"
+    local norm
+    norm=$(echo "$code" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+
+    local result
+    result=$(echo "$rdata" | jq -r --arg q "$norm" '
+        [ .Buildings[].Rooms[] |
+          { id: (.Id|tostring), code: .Code, name: .Description } |
+          .norm_code = (.code | ascii_upcase | gsub(" "; ""))
+        ] |
+        ( map(select(.norm_code == $q))           | if length > 0 then .[0] else null end ) //
+        ( map(select(.norm_code | startswith($q)))| if length > 0 then .[0] else null end ) //
+        null')
+
+    if [[ "$result" == "null" || -z "$result" ]]; then
+        echo "ERROR: Room code '$code' not found." >&2
+        echo "  Close matches:" >&2
+        echo "$rdata" | jq -r --arg q "$norm" '
+            [ .Buildings[].Rooms[] |
+              { code: .Code, name: .Description, id: (.Id|tostring) } |
+              .norm = (.code | ascii_upcase | gsub(" "; ""))
+            ] | map(select(.norm | test($q[0:2]))) | .[0:8][] |
+            "    \(.code)  →  \(.name)  (ID \(.id))"' >&2
+        exit 1
+    fi
+
+    local found_id found_code found_name
+    found_id=$(echo   "$result" | jq -r '.id')
+    found_code=$(echo "$result" | jq -r '.code')
+    found_name=$(echo "$result" | jq -r '.name')
+    info "  Found: $found_code — $found_name (ID $found_id)"
+    echo "$found_id"
+}
+
+# ─── Building code → numeric ID lookup ───────────────────────────────────────
+# $1 = building code string, $2 = already-fetched rooms JSON
+
+resolve_building_code() {
+    local code="$1" rdata="$2"
+    local norm
+    norm=$(echo "$code" | tr '[:lower:]' '[:upper:]')
+
+    local result
+    result=$(echo "$rdata" | jq -r --arg q "$norm" '
+        [ .Buildings[] | { id: (.Id|tostring), code: .Code, name: .Description } ] |
+        ( map(select(.code | ascii_upcase == $q))             | if length > 0 then .[0] else null end ) //
+        ( map(select(.code | ascii_upcase | startswith($q)))  | if length > 0 then .[0] else null end ) //
+        null')
+
+    if [[ "$result" == "null" || -z "$result" ]]; then
+        echo "ERROR: Building code '$code' not found." >&2
+        echo "  Available buildings:" >&2
+        echo "$rdata" | jq -r \
+            '.Buildings[] | "    \(.Code)  →  \(.Description)  (ID \(.Id))"' \
+            | sort >&2
+        exit 1
+    fi
+
+    local found_id found_code found_name
+    found_id=$(echo   "$result" | jq -r '.id')
+    found_code=$(echo "$result" | jq -r '.code')
+    found_name=$(echo "$result" | jq -r '.name')
+    info "  Building: $found_code — $found_name (ID $found_id)"
+    echo "$found_id"
+}
+
+# ─── --now: is this room free at this moment? ────────────────────────────────
+# Requires --room, --rooms, or --room-id.
+# Exit codes: 0 = free, 1 = booked, 2 = usage error
+
+check_now() {
+    local rid="$1" rname="$2"
+    local now_time now_min
+    now_time=$(date '+%H:%M')
+    now_min=$(time_to_min "$now_time")
+    local today
+    today=$(date '+%Y-%m-%d')
+
+    info "  Checking $rname at $now_time..."
+
+    local detail bookings
+    detail=$(ems_post "GetLocationDetailsAvailability" "$(detail_payload "$rid")")
+    bookings=$(echo "$detail" | jq '
+        if .JsonData then (.JsonData | fromjson | .bookings // [])
+        elif type == "array" then . else [] end')
+
+    # Find any booking on today that contains right now
+    local currently_booked
+    currently_booked=$(echo "$bookings" | jq \
+        --arg today "$today" \
+        --argjson now "$now_min" '
+        [ .[] |
+          select(.Start | startswith($today)) |
+          ( .Start | .[11:16] | split(":") | (.[0]|tonumber)*60+(.[1]|tonumber) ) as $s |
+          ( .End   | .[11:16] | split(":") | (.[0]|tonumber)*60+(.[1]|tonumber) ) as $e |
+          select($now >= $s and $now < $e)
+        ] | length > 0')
+
+    if [[ "$currently_booked" == "true" ]]; then
+        # Find what's booked and when it ends
+        local booking_info
+        booking_info=$(echo "$bookings" | jq -r \
+            --arg today "$today" \
+            --argjson now "$now_min" '
+            .[] |
+            select(.Start | startswith($today)) |
+            ( .Start | .[11:16] | split(":") | (.[0]|tonumber)*60+(.[1]|tonumber) ) as $s |
+            ( .End   | .[11:16] | split(":") | (.[0]|tonumber)*60+(.[1]|tonumber) ) as $e |
+            select($now >= $s and $now < $e) |
+            "until \(.End|.[11:16])  (\(.Title))"' \
+            | head -1)
+
+        if ! $QUIET; then
+            printf '\033[31m  BOOKED\033[0m  %s  —  %s  %s\n' \
+                "$now_time" "$rname" "$booking_info"
+        fi
+        return 1
+    else
+        # Find when the next booking starts
+        local next_info
+        next_info=$(echo "$bookings" | jq -r \
+            --arg today "$today" \
+            --argjson now "$now_min" '
+            [ .[] |
+              select(.Start | startswith($today)) |
+              ( .Start | .[11:16] | split(":") | (.[0]|tonumber)*60+(.[1]|tonumber) ) as $s |
+              select($s > $now)
+            ] | sort_by(.Start) | first |
+            "until \(.Start|.[11:16])" // "for the rest of the day"' \
+            2>/dev/null || echo "for the rest of the day")
+
+        if ! $QUIET; then
+            printf '\033[32m  FREE\033[0m    %s  —  %s  %s\n' \
+                "$now_time" "$rname" "$next_info"
+        fi
+        return 0
+    fi
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+main() {
+    cache_init
+
+    if $CLEAR_CACHE; then
+        cache_clear
+        exit 0
+    fi
+
+    info "  Date range : $START_DATE  →  $END_DATE"
+    [[ -n "$FROM_TIME"  ]] && info "  From       : $FROM_TIME"
+    [[ -n "$UNTIL_TIME" ]] && info "  Until      : $UNTIL_TIME"
+    [[ "$MIN_FREE" -gt 0 ]] && info "  Min free   : ${MIN_FREE} min"
+
+    local payload
+    payload=$(browse_payload)
+
+    # Fetch rooms first — needed for building/room code resolution in all paths
+    info "  Fetching rooms..."
+    local rdata
+    rdata=$(ems_post "GetBrowseLocationsRooms" "$payload")
+
+    # Resolve --building to a numeric location ID, then re-fetch with that filter
+    if [[ -n "$BUILDING_CODE" ]]; then
+        LOCATION_ID=$(resolve_building_code "$BUILDING_CODE" "$rdata")
+        payload=$(browse_payload)
+        info "  Re-fetching rooms for building filter..."
+        rdata=$(ems_post "GetBrowseLocationsRooms" "$payload")
+    fi
+
+    info "  Location   : $LOCATION_ID"
+
+    # Multi-room comparison
+    if [[ -n "$ROOM_CODES" ]]; then
+        info ""
+        print_multi_room "$ROOM_CODES" "$rdata"
+        return
+    fi
+
+    # Single room by code
+    if [[ -n "$ROOM_CODE" && -z "$ROOM_ID" ]]; then
+        ROOM_ID=$(resolve_room_code "$ROOM_CODE" "$rdata")
+    fi
+
+    [[ -n "$ROOM_ID" ]] && info "  Room ID    : $ROOM_ID"
+    info ""
+
+    # --now: check current occupancy, exit 0=free 1=booked
+    if $CHECK_NOW; then
+        if [[ -z "$ROOM_ID" && -z "$ROOM_CODES" ]]; then
+            die "--now requires --room, --rooms, or --room-id"
+        fi
+
+        local overall_exit=0
+
+        if [[ -n "$ROOM_CODES" ]]; then
+            local IFS=','
+            local code_arr; read -ra code_arr <<< "$ROOM_CODES"
+            for code in "${code_arr[@]}"; do
+                code="${code// /}"; [[ -z "$code" ]] && continue
+                local rid rname
+                rid=$(resolve_room_code "$code" "$rdata")
+                rname=$(echo "$rdata" | jq -r --arg id "$rid" \
+                    '.Buildings[].Rooms[] | select(.Id==($id|tonumber)) | .Description' \
+                    | head -1)
+                check_now "$rid" "$rname" || overall_exit=1
+            done
+        else
+            local rname
+            rname=$(echo "$rdata" | jq -r --arg id "$ROOM_ID" \
+                '.Buildings[].Rooms[] | select(.Id==($id|tonumber)) | .Description' \
+                | head -1)
+            check_now "$ROOM_ID" "$rname" || overall_exit=1
+        fi
+
+        exit "$overall_exit"
+    fi
+    if [[ -n "$ROOM_ID" ]]; then
+        info "Fetching room detail..."
+        local detail
+        detail=$(ems_post "GetLocationDetailsAvailability" "$(detail_payload "$ROOM_ID")")
+        print_detail "$detail"
+        return
+    fi
+
+    # Bookings list
+    if $SHOW_BOOKINGS && ! $FREE_ONLY; then
+        info "Fetching bookings..."
+        local bdata
+        bdata=$(ems_post "GetBrowseLocationsBookings" "$payload")
+        print_bookings "$bdata" "$rdata"
+        return
+    fi
+
+    # Free rooms
+    if $FREE_ONLY; then
+        info "Fetching bookings..."
+        local bdata
+        bdata=$(ems_post "GetBrowseLocationsBookings" "$payload")
+        print_free_rooms "$rdata" "$bdata"
+        return
+    fi
+
+    # Default: list all rooms
+    print_rooms "$rdata"
+}
+
+main
