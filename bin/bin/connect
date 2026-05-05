@@ -1,4 +1,29 @@
 #!/usr/bin/env bash
+# =============================================================================
+# connect - Crestron Device SSH/Telnet Connection Utility
+# Author: Charlie Whittleman
+#
+# Attempts to connect to a Crestron device using a waterfall of authentication
+# strategies, ensuring a successful connection regardless of how the device is
+# configured. Targets are resolved against a default domain suffix if no dots
+# are present in the provided hostname.
+#
+# Usage: connect <hostname_or_ip>
+#
+# Authentication order:
+#   1. SSH as admin user (credentials retrieved from pass)
+#   2. SSH as 'crestron' with an empty password
+#   3. Telnet on port 41795
+#
+# Dependencies: sshpass, pass
+#
+# Changelog:
+#   v1.0 - Initial release: basic SSH wrapper
+#   v1.1 - Added SSH via 'crestron' account as fallback; added Telnet fallback
+#   v1.2 - Replaced environment variable for admin password with pass integration
+#   v1.3 - Added SSH options to streamline and harden connection behavior
+#   v1.4 - Changed shebang to '#!/usr/bin/env bash' for cross-distro compatibility
+# =============================================================================
 set -euo pipefail
 
 # --- COLORS ---
