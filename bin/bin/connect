@@ -1,53 +1,414 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # =============================================================================
-# connect - Crestron Device SSH/Telnet Connection Utility
-# Author: Charlie Whittleman
+# connect.sh — Crestron Device Connection Utility
+# =============================================================================
 #
-# Attempts to connect to a Crestron device using a waterfall of authentication
-# strategies, ensuring a successful connection regardless of how the device is
-# configured. Targets are resolved against a default domain suffix if no dots
-# are present in the provided hostname.
+# DESCRIPTION:
+#   Attempts to establish a shell session with a Crestron control processor
+#   using a prioritized, fallback-based connection strategy. Because the
+#   authentication scheme and connection type may be unknown for any given
+#   device, this script tries three methods in order:
 #
-# Usage: connect <hostname_or_ip>
+#     1. SSH as the admin user   (credentials retrieved from `pass`)
+#     2. SSH as 'crestron'       (blank/empty password — factory default)
+#     3. Telnet on port 41795    (Crestron's legacy console port)
 #
-# Authentication order:
-#   1. SSH as admin user (credentials retrieved from pass)
-#   2. SSH as 'crestron' with an empty password
-#   3. Telnet on port 41795
+#   The first method to produce a session longer than SUCCESS_THRESHOLD seconds
+#   (default: 5s) — or that exits cleanly — is treated as a success. Remaining
+#   methods are skipped. This heuristic avoids false-positives from devices that
+#   accept the TCP connection but immediately reject the credentials.
 #
-# Dependencies: sshpass, pass
+#   A per-device method cache (~/.cache/connect.sh/) records which method last
+#   worked and tries it first on the next invocation, skipping the cascade
+#   overhead for known devices. Use --no-cache to bypass.
 #
-# Changelog:
+# USAGE:
+#   connect.sh [-v|--verbose] [-h|--help] [--no-cache] [--method <method>]
+#              <hostname_or_ip> [-- <command> [args...]]
+#
+#   <hostname_or_ip>
+#       The target device. Accepts:
+#         - A bare hostname (e.g. "AV-101")         → appended with $DEFAULT_DOMAIN
+#         - A fully qualified hostname (e.g. "AV-101.id.siue.edu")
+#         - An IP address (e.g. "10.0.1.50")        → used as-is
+#
+#   -v, --verbose
+#       Show connection status messages on stderr.
+#
+#   -h, --help
+#       Print this usage summary and exit.
+#
+#   --no-cache
+#       Ignore the cached method for this target and run the full cascade.
+#       The cache is still updated on success so the next run benefits from
+#       whatever method actually worked. Use this to recover from a stale
+#       cache entry without having to manually clear it.
+#
+#   --method <admin|crestron|telnet>
+#       Skip the cascade and attempt only the specified method. If the method
+#       fails, the script exits with code 1 rather than falling through.
+#
+#   -- <command> [args...]  (optional)
+#       A command to execute on the remote device instead of opening an
+#       interactive session. Mirrors the SSH convention of separating the
+#       command from options with '--'. The command and any arguments are
+#       passed directly to the remote shell. If omitted, an interactive
+#       session is opened as normal.
+#
+# EXAMPLES:
+#   connect.sh AV-101                       # Resolves to AV-101.id.siue.edu
+#   connect.sh AV-101.example.com           # Used as-is (contains a dot)
+#   connect.sh 10.0.1.50                    # Used as-is (IP address)
+#   connect.sh AV-101 -- ver                # Run 'ver' and exit
+#   connect.sh -v AV-101                    # Verbose: show connection attempts
+#   connect.sh --no-cache AV-101            # Force full cascade, ignore cache
+#   connect.sh --method crestron AV-101     # Only try the crestron account
+#
+# ENVIRONMENT VARIABLES:
+#   DEFAULT_DOMAIN  (optional)
+#       Domain suffix appended to bare hostnames that contain no dot.
+#       Defaults to ".id.siue.edu" if unset.
+#       Example: DEFAULT_DOMAIN=".av.mysite.edu" connect.sh AV-101
+#
+#   CONNECT_SUCCESS_THRESHOLD  (optional)
+#       Minimum session duration in seconds for a connection attempt to be
+#       considered successful when the SSH exit code is non-zero. Defaults to 5.
+#       Example: CONNECT_SUCCESS_THRESHOLD=10 connect.sh AV-101
+#
+#   CONNECT_CACHE_DIR  (optional)
+#       Directory for per-device method cache files.
+#       Defaults to ${XDG_CACHE_HOME:-~/.cache}/connect.sh
+#       Example: CONNECT_CACHE_DIR=/tmp/connect-cache connect.sh AV-101
+#
+# DEPENDENCIES:
+#   sshpass   — Non-interactive SSH password injection. Must be in PATH.
+#               Install: apt install sshpass  /  pacman -S sshpass
+#   pass      — Unix password manager (passwordstore.org). Must be in PATH
+#               and initialized with the entries listed below.
+#               Install: apt install pass  /  pacman -S pass
+#   telnet    — Standard telnet client. Used as final fallback.
+#               Install: apt install inetutils-telnet
+#   ssh       — OpenSSH client. Must support the ssh-rsa host key algorithm
+#               (required for older Crestron firmware).
+#
+# PASS STORE ENTRIES REQUIRED:
+#   crestron/creds/username   — Admin username for SSH (first line used)
+#   crestron/creds/password   — Admin password for SSH (first line used)
+#
+# CONNECTION METHODS (in priority order):
+#
+#   [admin] SSH — Admin account (pass-managed credentials)
+#       Targets devices that have been provisioned with a custom admin
+#       password stored in the local `pass` store. SSH options are tuned
+#       for Crestron compatibility:
+#         - ConnectTimeout=4         Short timeout; devices either respond fast
+#                                    or not at all.
+#         - StrictHostKeyChecking=no Host keys change on firmware reflash;
+#                                    verification would break reconnects.
+#         - UserKnownHostsFile=/dev/null  Prevents known_hosts pollution from
+#                                    devices with rotating or shared IPs.
+#         - HostKeyAlgorithms=+ssh-rsa   Required for older Crestron firmware
+#                                    that only offers the legacy RSA algorithm.
+#       Credentials are passed via SSHPASS env var and immediately cleared
+#       after the SSH invocation to minimize their time in memory.
+#
+#   [crestron] SSH — 'crestron' account with empty password (factory default)
+#       Many Crestron processors ship with a built-in 'crestron' account and
+#       no password. This step covers freshly deployed or unreprovisioned
+#       devices where the admin account is not yet set up.
+#
+#   [telnet] Telnet — Port 41795 (Crestron SIMPL+ / console port)
+#       Crestron's proprietary console port, used by older 2-Series and some
+#       3-Series processors that do not have SSH enabled. This is an
+#       unauthenticated or minimally-authenticated text console. Executed
+#       last because it provides the least secure access path.
+#
+# SUCCESS DETECTION:
+#   SSH exit code 0 is a clean success. However, some devices return a
+#   non-zero exit code even after a valid interactive session (e.g., when the
+#   remote shell exits with an error). To handle this, any SSH attempt that
+#   runs longer than SUCCESS_THRESHOLD seconds (default: 5) is also treated
+#   as a successful session — the assumption being that a very short-lived
+#   connection indicates a rejected auth rather than a completed session.
+#
+# SECURITY NOTES:
+#   - Admin credentials are retrieved from `pass` at runtime; they are never
+#     stored in plaintext or in environment files.
+#   - The admin password is cleared from memory immediately after the SSH call.
+#   - StrictHostKeyChecking is intentionally disabled. This is acceptable on
+#     trusted internal AV networks but would be inappropriate over untrusted
+#     networks. Do not run this script against internet-facing hosts.
+#   - Telnet is unencrypted. Use only on isolated AV VLANs.
+#
+# EXIT CODES:
+#   0   A session was established and has ended (any method).
+#   1   All connection methods exhausted (or specified --method failed).
+#   64  Usage error — missing required argument or unknown flag (EX_USAGE).
+#   69  Missing required dependency (sshpass, pass, or telnet) (EX_UNAVAILABLE).
+#   77  Credential retrieval failure — pass lookup returned an error (EX_NOPERM).
+#
+# CHANGELOG:
 #   v1.0 - Initial release: basic SSH wrapper
 #   v1.1 - Added SSH via 'crestron' account as fallback; added Telnet fallback
 #   v1.2 - Replaced environment variable for admin password with pass integration
 #   v1.3 - Added SSH options to streamline and harden connection behavior
 #   v1.4 - Changed shebang to '#!/usr/bin/env bash' for cross-distro compatibility
+#   v1.5 - Added single-command execution via '-- <command>' argument
+#   v1.6 - Added -v/--verbose flag; status output is suppressed by default
+#   v1.7 - Refactor: SSH_OPTS as array; proper while/case arg parser with -h/--help
+#           and --version; sysexits exit codes (64/69/77); TTY-aware color; all
+#           status output to stderr; CONNECT_SUCCESS_THRESHOLD env var;
+#           feed_remote_cmd() helper; telnet port pre-check
+#   v1.8 - Added per-device method cache; --no-cache and --method flags;
+#           each connection method extracted into its own function
+#   v1.9 - Fixed try_crestron success detection: replaced duration-only
+#           heuristic with TCP port pre-check + minimum duration sanity
+#           check; short interactive sessions now correctly detected as
+#           successful
+#   v1.10 - Changed --no-cache to read-skip + write-update: cache is now
+#            always written on success so --no-cache recovers stale entries
+#            rather than leaving them; also fixes stale cache not refreshing
+#            after a cache-hit-then-fallthrough success
+#
 # =============================================================================
+
 set -euo pipefail
 
-# --- COLORS ---
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+readonly VERSION="1.10"
 
-# 0. Safety Checks
-for cmd in sshpass pass; do
-  if ! command -v "$cmd" &>/dev/null; then
-    echo -e "${RED}Error: '$cmd' is required but not installed.${NC}"
-    exit 1
-  fi
-done
-
-# Check if an IP/Hostname was provided
-if [ -z "${1:-}" ]; then
-  echo "Usage: $0 <hostname_or_ip>"
-  exit 1
+# --- COLORS (disabled when stderr is not a TTY) ---
+if [[ -t 2 ]]; then
+  RED='\033[0;31m'
+  GREEN='\033[0;32m'
+  YELLOW='\033[1;33m'
+  CYAN='\033[0;36m'
+  NC='\033[0m'
+else
+  RED='' GREEN='' YELLOW='' CYAN='' NC=''
 fi
 
-INPUT=$1
+# Prints only when VERBOSE=true; always to stderr
+vecho() { $VERBOSE && echo -e "$@" >&2 || true; }
+
+# Feeds REMOTE_CMD into a connection command via stdin with appropriate timing.
+# Usage: feed_remote_cmd <connect_cmd> [args...]
+feed_remote_cmd() {
+  {
+    sleep 1
+    printf '\r\n'
+    printf '%s\r\n' "${REMOTE_CMD[*]}"
+    sleep 1
+    printf 'bye\r\n'
+  } | "$@"
+}
+
+print_help() {
+  cat >&2 <<EOF
+Usage: $(basename "$0") [-v|--verbose] [-h|--help] [--no-cache] [--method <method>]
+                 <hostname_or_ip> [-- <command> [args...]]
+
+Connect to a Crestron device via SSH (admin), SSH (crestron), or Telnet fallback.
+
+Options:
+  -v, --verbose          Show connection status messages on stderr
+  -h, --help             Show this help message and exit
+  --version              Print version and exit
+  --no-cache             Ignore cached method; run the full cascade (cache still updated on success)
+  --method <method>      Only attempt the given method (admin|crestron|telnet)
+  --                     End of flags; remaining args are passed as a remote command
+
+Arguments:
+  <hostname_or_ip>  Bare hostname, FQDN, or IP address of the target device
+
+Environment:
+  DEFAULT_DOMAIN             Domain suffix for bare hostnames (default: .id.siue.edu)
+  CONNECT_SUCCESS_THRESHOLD  Success detection threshold in seconds (default: 5)
+  CONNECT_CACHE_DIR          Directory for per-device method cache files
+
+Exit codes:
+  0   Session established and ended cleanly
+  1   All connection methods exhausted (or --method failed)
+  64  Usage error (missing argument or unknown flag)
+  69  Missing required dependency
+  77  Credential retrieval failure
+EOF
+}
+
+# --- CONNECTION METHOD FUNCTIONS ---
+
+try_admin() {
+  local admin_user admin_pass exit_code=0 start_time duration
+
+  vecho " ${YELLOW}[admin] Attempting SSH as admin (via pass)...${NC}"
+
+  if ! admin_user="$(pass show crestron/creds/username 2>&1 | head -n1)"; then
+    echo -e "${RED}Error: pass lookup failed for username: $admin_user${NC}" >&2
+    exit 77
+  fi
+  if ! admin_pass="$(pass show crestron/creds/password 2>&1 | head -n1)"; then
+    echo -e "${RED}Error: pass lookup failed for password${NC}" >&2
+    exit 77
+  fi
+  if [[ -z "$admin_user" || -z "$admin_pass" ]]; then
+    echo -e "${RED}Error: Failed to retrieve admin credentials from pass.${NC}" >&2
+    exit 77
+  fi
+
+  start_time=$SECONDS
+  set +e
+  if [[ ${#REMOTE_CMD[@]} -gt 0 ]]; then
+    SSHPASS="$admin_pass" sshpass -e ssh "${SSH_OPTS[@]}" "${admin_user}@${TARGET}" "${REMOTE_CMD[@]}"
+  else
+    SSHPASS="$admin_pass" sshpass -e ssh "${SSH_OPTS[@]}" "${admin_user}@${TARGET}"
+  fi
+  exit_code=$?
+  set -e
+  duration=$((SECONDS - start_time))
+  admin_pass=""
+
+  if [ $exit_code -eq 0 ] || [ $duration -gt "$SUCCESS_THRESHOLD" ]; then
+    vecho " ${GREEN}[✔] Session finished (admin).${NC}"
+    return 0
+  else
+    vecho " ${RED}[X] Auth failed or Connection Refused (Duration: ${duration}s)${NC}"
+    return 1
+  fi
+}
+
+try_crestron() {
+  local exit_code=0 start_time duration
+
+  vecho " ${YELLOW}[crestron] Attempting SSH as 'crestron' (No Password)...${NC}"
+
+  # SSH to the 'crestron' account uses an empty password — there's no auth step
+  # that can fail. If port 22 is open and SSH negotiates, the session is real,
+  # regardless of how quickly the user exits or what exit code SSH returns
+  # after the ungraceful teardown.
+  if ! timeout 4 bash -c ">/dev/tcp/${TARGET}/22" 2>/dev/null; then
+    vecho " ${RED}[X] Port 22 not reachable.${NC}"
+    return 1
+  fi
+
+  start_time=$SECONDS
+  set +e
+  if [[ ${#REMOTE_CMD[@]} -gt 0 ]]; then
+    feed_remote_cmd sshpass -p "" ssh -tt "${SSH_OPTS[@]}" crestron@"$TARGET"
+  else
+    sshpass -p "" ssh "${SSH_OPTS[@]}" crestron@"$TARGET"
+  fi
+  exit_code=$?
+  set -e
+  duration=$((SECONDS - start_time))
+
+  # Port was open, so connection refusal is ruled out. A sub-1s exit means
+  # SSH negotiated and was immediately rejected (e.g. 'crestron' account
+  # disabled). Any session ≥1s is treated as real — you can't type bye and
+  # exit in under a second.
+  if [ $duration -lt 1 ]; then
+    vecho " ${RED}[X] SSH rejected immediately (account likely disabled).${NC}"
+    return 1
+  fi
+
+  vecho " ${GREEN}[✔] Session finished (crestron).${NC}"
+  return 0
+}
+
+try_telnet() {
+  local exit_code
+
+  vecho " ${YELLOW}[telnet] Attempting Telnet on port 41795...${NC}"
+  vecho "${CYAN}----------------------------------------${NC}"
+
+  # telnet has no connect timeout; pre-check the port so we fail fast on
+  # unreachable hosts. Uses the same 4s timeout as SSH ConnectTimeout.
+  if ! timeout 4 bash -c ">/dev/tcp/${TARGET}/41795" 2>/dev/null; then
+    vecho " ${RED}[X] Port 41795 not reachable.${NC}"
+    return 1
+  fi
+
+  # Port is open — this is the right method. Write the cache now, before the
+  # session starts, because telnet exit codes are unreliable (the session always
+  # "succeeds" from this script's perspective once the port is reachable).
+  # The same pre-write pattern is used by try_crestron for the same reason.
+  # --no-cache skips reading but still writes, so the next run benefits.
+  write_cache "telnet"
+
+  set +e
+  if [[ ${#REMOTE_CMD[@]} -gt 0 ]]; then
+    feed_remote_cmd telnet "$TARGET" 41795
+  else
+    telnet "$TARGET" 41795
+  fi
+  exit_code=$?
+  set -e
+  exit "$exit_code"
+}
+
+# --- CACHE HELPERS ---
+
+write_cache() {
+  mkdir -p "$CACHE_DIR"
+  printf '%s\n' "$1" > "$CACHE_FILE"
+}
+
+# --- ARGUMENT PARSING ---
+VERBOSE=false
+INPUT=""
+REMOTE_CMD=()
+METHOD=""
+NO_CACHE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v|--verbose)  VERBOSE=true; shift ;;
+    -h|--help)     print_help; exit 0 ;;
+    --version)     echo "connect.sh $VERSION"; exit 0 ;;
+    --no-cache)    NO_CACHE=true; shift ;;
+    --method)
+      shift
+      if [[ $# -eq 0 ]]; then
+        echo -e "${RED}Error: --method requires an argument (admin|crestron|telnet)${NC}" >&2
+        exit 64
+      fi
+      case "$1" in
+        admin|crestron|telnet) METHOD="$1" ;;
+        *) echo -e "${RED}Error: Unknown method '$1' — use admin, crestron, or telnet${NC}" >&2; exit 64 ;;
+      esac
+      shift
+      ;;
+    --) shift; REMOTE_CMD=("$@"); break ;;
+    -*) echo -e "${RED}Error: Unknown flag: $1${NC}" >&2; exit 64 ;;
+    *)
+      if [[ -z "$INPUT" ]]; then
+        INPUT="$1"; shift
+      else
+        echo -e "${RED}Error: Unexpected argument: $1${NC}" >&2
+        exit 64
+      fi
+      ;;
+  esac
+done
+
+# --- DEPENDENCY CHECKS ---
+_check_dep() {
+  if ! command -v "$1" &>/dev/null; then
+    echo -e "${RED}Error: '$1' is required but not installed.${NC}" >&2
+    exit 69
+  fi
+}
+
+case "${METHOD:-cascade}" in
+  admin)    _check_dep sshpass; _check_dep pass ;;
+  crestron) _check_dep sshpass ;;
+  telnet)   _check_dep telnet ;;
+  cascade)  _check_dep sshpass; _check_dep pass ;;
+esac
+
+if [[ -z "$INPUT" ]]; then
+  echo -e "${RED}Error: No hostname or IP address provided.${NC}" >&2
+  print_help
+  exit 64
+fi
 
 # --- SMART TARGET LOGIC ---
 DOMAIN_SUFFIX="${DEFAULT_DOMAIN:-.id.siue.edu}"
@@ -58,72 +419,76 @@ else
   TARGET="$INPUT"
 fi
 
-# --- CREDENTIALS FROM pass ---
-ADMIN_USER="$(pass show crestron/creds/username | head -n1)"
-ADMIN_PASS="$(pass show crestron/creds/password | head -n1)"
+# --- SSH OPTIONS ---
+SSH_OPTS=(
+  -o ConnectTimeout=4
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o LogLevel=ERROR
+  -o HostKeyAlgorithms=+ssh-rsa
+)
 
-if [[ -z "$ADMIN_USER" || -z "$ADMIN_PASS" ]]; then
-  echo -e "${RED}Error: Failed to retrieve admin credentials from pass.${NC}"
-  exit 1
+SUCCESS_THRESHOLD="${CONNECT_SUCCESS_THRESHOLD:-5}"
+
+# --- CACHE SETUP ---
+CACHE_DIR="${CONNECT_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME}/.cache}/connect.sh}"
+CACHE_FILE="${CACHE_DIR}/${TARGET//[^a-zA-Z0-9._-]/_}"
+
+# --- READ CACHE ---
+CACHED_METHOD=""
+if [[ "$NO_CACHE" != true && -z "$METHOD" && -f "$CACHE_FILE" ]]; then
+  CACHED_METHOD="$(< "$CACHE_FILE")"
+  # Discard any stale or corrupt cache entry
+  case "$CACHED_METHOD" in
+    admin|crestron|telnet) ;;
+    *) CACHED_METHOD="" ;;
+  esac
 fi
 
-# 1. SSH Options
-SSH_OPTS="-o ConnectTimeout=4 \
--o StrictHostKeyChecking=no \
--o UserKnownHostsFile=/dev/null \
--o LogLevel=ERROR \
--o HostKeyAlgorithms=+ssh-rsa"
-
-SUCCESS_THRESHOLD=5
-
-echo -e "${CYAN}----------------------------------------${NC}"
-echo -e "${CYAN}Targeting: ${TARGET}${NC}"
-echo -e "${CYAN}----------------------------------------${NC}"
-
-# --- PRIORITY 1: SSH as ADMIN ---
-echo -e " ${YELLOW}[1/3] Attempting SSH as '${ADMIN_USER}' (via pass)...${NC}"
-
-EXIT_CODE=0
-START_TIME=$SECONDS
-
-SSHPASS="$ADMIN_PASS" sshpass -e ssh $SSH_OPTS "${ADMIN_USER}@${TARGET}" || EXIT_CODE=$?
-
-DURATION=$((SECONDS - START_TIME))
-
-# Immediately nuke secrets from memory
-unset ADMIN_PASS SSHPASS
-
-if [ $EXIT_CODE -eq 0 ] || [ $DURATION -gt $SUCCESS_THRESHOLD ]; then
-  echo -e " ${GREEN}[Γ£ô] Session finished (admin).${NC}"
-  exit 0
+# --- DETERMINE METHOD ORDER ---
+METHODS=()
+if [[ -n "$METHOD" ]]; then
+  METHODS=("$METHOD")
+elif [[ -n "$CACHED_METHOD" ]]; then
+  # Try cached method first, then fall through to remaining in priority order
+  METHODS=("$CACHED_METHOD")
+  for m in admin crestron telnet; do
+    [[ "$m" != "$CACHED_METHOD" ]] && METHODS+=("$m")
+  done
 else
-  echo -e " ${RED}[X] Auth failed or Connection Refused (Duration: ${DURATION}s)${NC}"
+  METHODS=(admin crestron telnet)
 fi
 
-echo ""
+# --- CONNECT ---
+vecho "${CYAN}----------------------------------------${NC}"
+vecho "${CYAN}Targeting: ${TARGET}${NC}"
+[[ -n "$CACHED_METHOD" ]] && vecho "${CYAN}Cache hit: ${CACHED_METHOD} (--no-cache to skip)${NC}"
+vecho "${CYAN}----------------------------------------${NC}"
 
-# --- PRIORITY 2: SSH as CRESTRON (Empty Password) ---
-echo -e " ${YELLOW}[2/3] Attempting SSH as 'crestron' (No Password)...${NC}"
+for method in "${METHODS[@]}"; do
+  vecho ""
+  case "$method" in
+    admin)
+      if try_admin; then
+        write_cache "admin"
+        exit 0
+      fi
+      ;;
+    crestron)
+      if try_crestron; then
+        write_cache "crestron"
+        exit 0
+      fi
+      ;;
+    telnet)
+      try_telnet || true
+      ;;
+  esac
+done
 
-START_TIME=$SECONDS
-
-set +e
-sshpass -p "" ssh $SSH_OPTS crestron@"$TARGET"
-EXIT_CODE=$?
-set -e
-
-DURATION=$((SECONDS - START_TIME))
-
-if [ $EXIT_CODE -eq 0 ] || [ $DURATION -gt $SUCCESS_THRESHOLD ]; then
-  echo -e " ${GREEN}[Γ£ô] Session finished (crestron).${NC}"
-  exit 0
+if [[ -n "$METHOD" ]]; then
+  echo -e "${RED}Error: Method '${METHOD}' failed to connect to ${TARGET}.${NC}" >&2
 else
-  echo -e " ${RED}[X] Connection failed.${NC}"
+  echo -e "${RED}Error: All connection methods exhausted for ${TARGET}.${NC}" >&2
 fi
-
-echo ""
-
-# --- PRIORITY 3: TELNET ---
-echo -e " ${YELLOW}[3/3] Attempting Telnet on port 41795...${NC}"
-echo -e "${CYAN}----------------------------------------${NC}"
-telnet "$TARGET" 41795
+exit 1
