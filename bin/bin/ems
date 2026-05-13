@@ -912,8 +912,8 @@ check_now() {
               ( .Start | .[11:16] | split(":") | (.[0]|tonumber)*60+(.[1]|tonumber) ) as $s |
               select($s > $now)
             ] | sort_by(.Start) | first |
-            "until \(.Start|.[11:16])" // "for the rest of the day"' \
-            2>/dev/null || echo "for the rest of the day")
+            if . then "until \(.Start|.[11:16])" else "all day" end' \
+            2>/dev/null || echo "all day")
 
         if ! $QUIET; then
             printf '\033[32m  FREE\033[0m    %s  —  %s  %s\n' \
