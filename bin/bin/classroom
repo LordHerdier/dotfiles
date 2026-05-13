@@ -11,7 +11,7 @@
 #     2. Looks up AV devices for that room (HDPS, PANEL, DMPS, etc.) in the
 #        local SmartClassroom VLAN export file.
 #     3. Prompts you to select a device if multiple are found, then hands off
-#        to connect.
+#        to connect.sh.
 #
 # USAGE:
 #   classroom.sh [-v|--verbose] [-h|--help] [--no-ems] [--refresh]
@@ -22,7 +22,7 @@
 #       Matched against device hostnames in the SmartClassroom export.
 #
 #   -v, --verbose
-#       Show verbose output; passed through to ems and connect.
+#       Show verbose output; passed through to ems.sh and connect.sh.
 #
 #   -h, --help
 #       Print this usage summary and exit.
@@ -36,11 +36,11 @@
 #       to be in PATH.
 #
 #   --method <admin|crestron|telnet>
-#       Passed through to connect — skip the cascade and use only this
+#       Passed through to connect.sh — skip the cascade and use only this
 #       connection method.
 #
 #   -- <command> [args...]
-#       Passed through to connect — run a command instead of an
+#       Passed through to connect.sh — run a command instead of an
 #       interactive session.
 #
 # EXAMPLES:
@@ -51,8 +51,8 @@
 #   classroom.sh --method telnet PH0302  # Force telnet connection
 #
 # DEPENDENCIES:
-#   ems       — Co-located in the same directory as this script.
-#   connect   — Co-located in the same directory as this script.
+#   ems.sh       — Co-located in the same directory as this script.
+#   connect.sh   — Co-located in the same directory as this script.
 #   efficient    — Only required when --refresh is used. Must be in PATH.
 #                  Run: efficient vlan show SmartClassroom --no-pager
 #   panelviewer  — Optional. Must be in PATH. When present, offered as an
@@ -64,7 +64,7 @@
 #     efficient vlan show SmartClassroom --no-pager > ~/work/SmartClassroom.$(date +%F)
 #
 # EXIT CODES:
-#   Propagates connect exit codes via exec:
+#   Propagates connect.sh exit codes via exec:
 #   0   Session established and ended cleanly.
 #   1   Connection failed or user aborted.
 #   64  Usage error.
@@ -92,12 +92,9 @@ else
 fi
 
 vecho() { $VERBOSE && echo -e "$@" >&2 || true; }
-info() { echo -e "$@" >&2; }
-warn() { echo -e "${YELLOW}Warning: $*${NC}" >&2; }
-die() {
-  echo -e "${RED}Error: $*${NC}" >&2
-  exit 1
-}
+info()  { echo -e "$@" >&2; }
+warn()  { echo -e "${YELLOW}Warning: $*${NC}" >&2; }
+die()   { echo -e "${RED}Error: $*${NC}" >&2; exit 1; }
 
 # --- GLOBALS ---
 VERBOSE=false
@@ -113,6 +110,9 @@ DEVICE_LABELS=()
 SELECTED_IP=""
 SELECTED_LABEL=""
 
+EMS_SCRIPT=""
+CONNECT_SCRIPT=""
+
 # --- HELP ---
 
 print_help() {
@@ -123,7 +123,7 @@ Usage: $(basename "$0") [-v|--verbose] [-h|--help] [--no-ems] [--refresh]
 Connect to a Crestron AV device by room code.
 
 Options:
-  -v, --verbose          Show verbose output (passed to ems and connect)
+  -v, --verbose          Show verbose output (passed to ems.sh and connect.sh)
   -h, --help             Show this help message and exit
   --version              Print version and exit
   --no-ems               Skip EMS availability check
@@ -135,7 +135,7 @@ Arguments:
   <room_code>  Room code to target (e.g. FH0111, AH1301). Case-insensitive.
 
 Exit codes:
-  Propagates connect exit codes (0/1/64/69/77)
+  Propagates connect.sh exit codes (0/1/64/69/77)
 EOF
 }
 
@@ -144,59 +144,34 @@ EOF
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    -v | --verbose)
-      VERBOSE=true
-      shift
-      ;;
-    -h | --help)
-      print_help
-      exit 0
-      ;;
-    --version)
-      echo "classroom.sh $VERSION"
-      exit 0
-      ;;
-    --no-ems)
-      NO_EMS=true
-      shift
-      ;;
-    --refresh)
-      REFRESH=true
-      shift
-      ;;
-    --method)
-      shift
-      if [[ $# -eq 0 ]]; then
-        echo -e "${RED}Error: --method requires an argument (admin|crestron|telnet)${NC}" >&2
-        exit 64
-      fi
-      case "$1" in
-      admin | crestron | telnet) METHOD="$1" ;;
-      *)
-        echo -e "${RED}Error: Unknown method '$1' — use admin, crestron, or telnet${NC}" >&2
-        exit 64
-        ;;
-      esac
-      shift
-      ;;
-    --)
-      shift
-      REMOTE_CMD=("$@")
-      break
-      ;;
-    -*)
-      echo -e "${RED}Error: Unknown flag: $1${NC}" >&2
-      exit 64
-      ;;
-    *)
-      if [[ -z "$ROOM_CODE" ]]; then
-        ROOM_CODE="${1^^}" # normalize to uppercase
+      -v|--verbose) VERBOSE=true; shift ;;
+      -h|--help)    print_help; exit 0 ;;
+      --version)    echo "classroom.sh $VERSION"; exit 0 ;;
+      --no-ems)     NO_EMS=true; shift ;;
+      --refresh)    REFRESH=true; shift ;;
+      --method)
         shift
-      else
-        echo -e "${RED}Error: Unexpected argument: $1${NC}" >&2
-        exit 64
-      fi
-      ;;
+        if [[ $# -eq 0 ]]; then
+          echo -e "${RED}Error: --method requires an argument (admin|crestron|telnet)${NC}" >&2
+          exit 64
+        fi
+        case "$1" in
+          admin|crestron|telnet) METHOD="$1" ;;
+          *) echo -e "${RED}Error: Unknown method '$1' — use admin, crestron, or telnet${NC}" >&2; exit 64 ;;
+        esac
+        shift
+        ;;
+      --) shift; REMOTE_CMD=("$@"); break ;;
+      -*) echo -e "${RED}Error: Unknown flag: $1${NC}" >&2; exit 64 ;;
+      *)
+        if [[ -z "$ROOM_CODE" ]]; then
+          ROOM_CODE="${1^^}"  # normalize to uppercase
+          shift
+        else
+          echo -e "${RED}Error: Unexpected argument: $1${NC}" >&2
+          exit 64
+        fi
+        ;;
     esac
   done
 
@@ -210,8 +185,23 @@ parse_args() {
 # --- DEPENDENCY CHECKS ---
 
 check_deps() {
-  [[ -x "${SCRIPT_DIR}/ems" ]] || die "ems not found or not executable in ${SCRIPT_DIR}"
-  [[ -x "${SCRIPT_DIR}/connect" ]] || die "connect not found or not executable in ${SCRIPT_DIR}"
+  # Accept both ems.sh (repo) and ems (dotfiles, extensions truncated)
+  if [[ -x "${SCRIPT_DIR}/ems.sh" ]]; then
+    EMS_SCRIPT="${SCRIPT_DIR}/ems.sh"
+  elif [[ -x "${SCRIPT_DIR}/ems" ]]; then
+    EMS_SCRIPT="${SCRIPT_DIR}/ems"
+  else
+    die "ems.sh (or ems) not found or not executable in ${SCRIPT_DIR}"
+  fi
+
+  # Accept both connect.sh (repo) and connect (dotfiles, extensions truncated)
+  if [[ -x "${SCRIPT_DIR}/connect.sh" ]]; then
+    CONNECT_SCRIPT="${SCRIPT_DIR}/connect.sh"
+  elif [[ -x "${SCRIPT_DIR}/connect" ]]; then
+    CONNECT_SCRIPT="${SCRIPT_DIR}/connect"
+  else
+    die "connect.sh (or connect) not found or not executable in ${SCRIPT_DIR}"
+  fi
 
   if ! command -v efficient &>/dev/null; then
     if $REFRESH; then
@@ -228,7 +218,7 @@ check_deps() {
 find_export_file() {
   local candidates=()
   # shellcheck disable=SC2206
-  candidates=($(ls "${WORK_DIR}"/SmartClassroom.????-??-?? 2>/dev/null | sort))
+  candidates=( $(ls "${WORK_DIR}"/SmartClassroom.????-??-?? 2>/dev/null | sort) )
   if [[ ${#candidates[@]} -eq 0 ]]; then
     return 1
   fi
@@ -241,11 +231,11 @@ check_file_age() {
   local file_date="${file##*.}"
   local file_epoch today_epoch age_days
 
-  file_epoch=$(date -d "$file_date" +%s 2>/dev/null ||
-    date -j -f '%Y-%m-%d' "$file_date" +%s 2>/dev/null ||
-    echo 0)
+  file_epoch=$(date -d "$file_date" +%s 2>/dev/null \
+    || date -j -f '%Y-%m-%d' "$file_date" +%s 2>/dev/null \
+    || echo 0)
   today_epoch=$(date +%s)
-  age_days=$(((today_epoch - file_epoch) / 86400))
+  age_days=$(( (today_epoch - file_epoch) / 86400 ))
 
   info "${CYAN}Export : $(basename "$file") (${age_days} day(s) old)${NC}"
 
@@ -260,7 +250,7 @@ refresh_export() {
 
   # --no-pager is required: without it efficient pipes through less, which
   # opens /dev/tty directly and nothing is captured by the file redirect.
-  if ! efficient vlan show SmartClassroom --no-pager >"$outfile"; then
+  if ! efficient vlan show SmartClassroom --no-pager > "$outfile"; then
     warn "efficient exited non-zero — export may be incomplete"
     if [[ ! -s "$outfile" ]]; then
       rm -f "$outfile"
@@ -289,7 +279,7 @@ run_ems_check() {
 
   set +e
   # stdout (FREE/BOOKED line) flows to terminal; stderr captured for error detection
-  "${SCRIPT_DIR}/ems" "${ems_args[@]}" 2>"$ems_stderr_file"
+  "$EMS_SCRIPT" "${ems_args[@]}" 2>"$ems_stderr_file"
   ems_rc=$?
   set -e
 
@@ -302,7 +292,7 @@ run_ems_check() {
     if echo "$ems_stderr" | grep -q '^ERROR:'; then
       warn "EMS check failed (${ems_stderr%%$'\n'*}) — skipping availability check"
     else
-      # Room is booked; BOOKED line already printed to stdout by ems
+      # Room is booked; BOOKED line already printed to stdout by ems.sh
       warn "Room appears to be IN USE — proceeding anyway"
     fi
   else
@@ -323,8 +313,8 @@ lookup_devices() {
   # Anchor match on "^ROOM-" to prevent prefix false-matches
   while IFS= read -r line; do
     local ip hostname devtype
-    ip=$(awk '{print $1}' <<<"$line")
-    hostname=$(awk '{print $3}' <<<"$line")
+    ip=$(awk '{print $1}' <<< "$line")
+    hostname=$(awk '{print $3}' <<< "$line")
 
     # Extract device type between first '-' and first '.' in hostname field
     devtype="${hostname#*-}"
@@ -350,29 +340,29 @@ handle_not_found() {
   read -rp "Choice [1-3]: " choice
 
   case "$choice" in
-  1)
-    if ! command -v efficient &>/dev/null; then
-      die "efficient not found in PATH — cannot refresh"
-    fi
-    refresh_export
-    lookup_devices "$EXPORT_FILE" "$ROOM_CODE"
-    if [[ ${#DEVICE_IPS[@]} -eq 0 ]]; then
-      die "Still no devices found for '${ROOM_CODE}' after refresh"
-    fi
-    select_device
-    ;;
-  2)
-    local manual
-    read -rp "Enter hostname or IP: " manual
-    [[ -z "$manual" ]] && die "No target entered — aborting"
-    SELECTED_IP="$manual"
-    ;;
-  3 | "")
-    die "Aborted"
-    ;;
-  *)
-    die "Invalid choice — aborting"
-    ;;
+    1)
+      if ! command -v efficient &>/dev/null; then
+        die "efficient not found in PATH — cannot refresh"
+      fi
+      refresh_export
+      lookup_devices "$EXPORT_FILE" "$ROOM_CODE"
+      if [[ ${#DEVICE_IPS[@]} -eq 0 ]]; then
+        die "Still no devices found for '${ROOM_CODE}' after refresh"
+      fi
+      select_device
+      ;;
+    2)
+      local manual
+      read -rp "Enter hostname or IP: " manual
+      [[ -z "$manual" ]] && die "No target entered — aborting"
+      SELECTED_IP="$manual"
+      ;;
+    3|"")
+      die "Aborted"
+      ;;
+    *)
+      die "Invalid choice — aborting"
+      ;;
   esac
 }
 
@@ -402,17 +392,17 @@ select_device() {
 
   info "${BOLD}Found ${count} device(s) for ${ROOM_CODE}:${NC}"
   local i
-  for ((i = 0; i < count; i++)); do
-    printf "  ${CYAN}%d)${NC} %-12s  %s\n" "$((i + 1))" "${DEVICE_LABELS[i]}" "${DEVICE_IPS[i]}" >&2
+  for (( i=0; i<count; i++ )); do
+    printf "  ${CYAN}%d)${NC} %-12s  %s\n" "$((i+1))" "${DEVICE_LABELS[i]}" "${DEVICE_IPS[i]}" >&2
   done
   info ""
 
   local choice
   while true; do
     read -rp "Select device [1-${count}]: " choice
-    if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= count)); then
-      SELECTED_IP="${DEVICE_IPS[$((choice - 1))]}"
-      SELECTED_LABEL="${DEVICE_LABELS[$((choice - 1))]}"
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
+      SELECTED_IP="${DEVICE_IPS[$((choice-1))]}"
+      SELECTED_LABEL="${DEVICE_LABELS[$((choice-1))]}"
       break
     fi
     warn "Enter a number between 1 and ${count}"
@@ -423,8 +413,8 @@ select_device() {
 
 is_panel() {
   case "${SELECTED_LABEL^^}" in
-  PANEL | TSW750) return 0 ;;
-  *) return 1 ;;
+    PANEL|TSW750) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -449,15 +439,15 @@ maybe_open_viewer() {
   read -rp "How would you like to connect? [1/2]: " choice
 
   case "${choice:-1}" in
-  1) return ;; # fall through to do_connect
-  2)
-    info ""
-    info "${CYAN}----------------------------------------${NC}"
-    info "${CYAN}Opening viewer for ${ROOM_CODE} → ${SELECTED_IP}${NC}"
-    info "${CYAN}----------------------------------------${NC}"
-    exec panelviewer "$SELECTED_IP"
-    ;;
-  *) warn "Invalid choice — defaulting to SSH" ;;
+    1) return ;;  # fall through to do_connect
+    2)
+      info ""
+      info "${CYAN}----------------------------------------${NC}"
+      info "${CYAN}Opening viewer for ${ROOM_CODE} → ${SELECTED_IP}${NC}"
+      info "${CYAN}----------------------------------------${NC}"
+      exec panelviewer "$SELECTED_IP"
+      ;;
+    *) warn "Invalid choice — defaulting to SSH" ;;
   esac
 }
 
@@ -472,14 +462,14 @@ do_connect() {
   info "${CYAN}----------------------------------------${NC}"
 
   local connect_args=()
-  $VERBOSE && connect_args+=("-v")
-  [[ -n "$METHOD" ]] && connect_args+=("--method" "$METHOD")
+  $VERBOSE             && connect_args+=("-v")
+  [[ -n "$METHOD" ]]   && connect_args+=("--method" "$METHOD")
   connect_args+=("$target")
   if [[ ${#REMOTE_CMD[@]} -gt 0 ]]; then
     connect_args+=("--" "${REMOTE_CMD[@]}")
   fi
 
-  exec "${SCRIPT_DIR}/connect" "${connect_args[@]}"
+  exec "$CONNECT_SCRIPT" "${connect_args[@]}"
 }
 
 # --- MAIN ---
