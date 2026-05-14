@@ -452,12 +452,34 @@ is_panel() {
   esac
 }
 
+# --- PROJECTOR ---
+
+is_projector() {
+  case "${SELECTED_LABEL^^}" in
+    PROJ*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Projectors have no SSH access — always open the web interface.
+maybe_open_projector() {
+  is_projector || return 0
+
+  local url="http://${SELECTED_IP}"
+  info ""
+  info "${CYAN}----------------------------------------${NC}"
+  info "${CYAN}Opening ${url} for ${ROOM_CODE}${NC}"
+  info "${CYAN}----------------------------------------${NC}"
+  xdg-open "$url"
+  exit 0
+}
+
 # Offered when a PANEL/TSW750 is selected and panelviewer is in PATH.
 # Skipped silently if a remote command or --method was specified (SSH intent).
 maybe_open_viewer() {
   # Unambiguous SSH intent — skip prompt
-  [[ ${#REMOTE_CMD[@]} -gt 0 || -n "$METHOD" ]] && return
-  is_panel || return
+  [[ ${#REMOTE_CMD[@]} -gt 0 || -n "$METHOD" ]] && return 0
+  is_panel || return 0
 
   if ! command -v panelviewer &>/dev/null; then
     warn "panelviewer not in PATH — connecting via SSH (install panelviewer to enable viewer mode)"
@@ -543,6 +565,7 @@ main() {
 
   select_device
   maybe_open_viewer
+  maybe_open_projector
   do_connect "$SELECTED_IP"
 }
 
