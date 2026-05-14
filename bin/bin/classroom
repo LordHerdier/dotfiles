@@ -107,6 +107,7 @@ REMOTE_CMD=()
 EXPORT_FILE=""
 DEVICE_IPS=()
 DEVICE_LABELS=()
+DEVICE_STATUSES=()
 SELECTED_IP=""
 SELECTED_LABEL=""
 
@@ -326,6 +327,33 @@ lookup_devices() {
   done < <(awk -v room="$room" 'NF>=4 && toupper($3) ~ "^"room"-"' "$file")
 }
 
+# --- PING CHECK ---
+
+# Pings all IPs in DEVICE_IPS in parallel; populates DEVICE_STATUSES array.
+ping_devices() {
+  DEVICE_STATUSES=()
+  local tmpfiles=() pids=() i
+
+  info "${CYAN}Checking device availability...${NC}"
+
+  for (( i=0; i<${#DEVICE_IPS[@]}; i++ )); do
+    local tmp
+    tmp=$(mktemp)
+    tmpfiles+=("$tmp")
+    (ping -c 1 -W 1 "${DEVICE_IPS[i]}" &>/dev/null && echo "ONLINE" || echo "OFFLINE") > "$tmp" &
+    pids+=($!)
+  done
+
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
+  done
+
+  for tmp in "${tmpfiles[@]}"; do
+    DEVICE_STATUSES+=("$(cat "$tmp")")
+    rm -f "$tmp"
+  done
+}
+
 # --- INTERACTIVE DEVICE SELECTION ---
 
 handle_not_found() {
@@ -374,10 +402,13 @@ select_device() {
     return
   fi
 
+  ping_devices
   info ""
 
   if [[ $count -eq 1 ]]; then
-    info "${BOLD}Found 1 device: ${DEVICE_LABELS[0]}  (${DEVICE_IPS[0]})${NC}"
+    local status="${DEVICE_STATUSES[0]}"
+    local sc; [[ "$status" == "ONLINE" ]] && sc="$GREEN" || sc="$RED"
+    info "${BOLD}Found 1 device: ${DEVICE_LABELS[0]}  (${DEVICE_IPS[0]})  ${sc}${status}${NC}"
     local yn
     read -rp "Connect? [Y/n] " yn
     yn="${yn:-Y}"
@@ -393,7 +424,10 @@ select_device() {
   info "${BOLD}Found ${count} device(s) for ${ROOM_CODE}:${NC}"
   local i
   for (( i=0; i<count; i++ )); do
-    printf "  ${CYAN}%d)${NC} %-12s  %s\n" "$((i+1))" "${DEVICE_LABELS[i]}" "${DEVICE_IPS[i]}" >&2
+    local status="${DEVICE_STATUSES[i]}"
+    local sc; [[ "$status" == "ONLINE" ]] && sc="$GREEN" || sc="$RED"
+    printf "  ${CYAN}%d)${NC} %-12s  %-18s  ${sc}%s${NC}\n" \
+      "$((i+1))" "${DEVICE_LABELS[i]}" "${DEVICE_IPS[i]}" "$status" >&2
   done
   info ""
 
