@@ -59,9 +59,11 @@
 #                  alternative to SSH for PANEL/TSW750 devices.
 #
 # SMART CLASSROOM EXPORT:
-#   Auto-detected from ~/work/SmartClassroom.YYYY-MM-DD (most recent file
-#   used). To refresh: classroom.sh --refresh, or manually:
-#     efficient vlan show SmartClassroom --no-pager > ~/work/SmartClassroom.$(date +%F)
+#   Stored as a single file ~/work/SmartClassroom with an embedded
+#   "# Exported: YYYY-MM-DD" header written by --refresh. To refresh:
+#     classroom.sh --refresh
+#   Or manually (no age-tracking header):
+#     efficient vlan show SmartClassroom --no-pager > ~/work/SmartClassroom
 #
 # EXIT CODES:
 #   Propagates connect.sh exit codes via exec:
@@ -176,7 +178,7 @@ parse_args() {
     esac
   done
 
-  if [[ -z "$ROOM_CODE" ]]; then
+  if [[ -z "$ROOM_CODE" ]] && ! $REFRESH; then
     echo -e "${RED}Error: No room code provided.${NC}" >&2
     print_help
     exit 64
@@ -186,22 +188,24 @@ parse_args() {
 # --- DEPENDENCY CHECKS ---
 
 check_deps() {
-  # Accept both ems.sh (repo) and ems (dotfiles, extensions truncated)
-  if [[ -x "${SCRIPT_DIR}/ems.sh" ]]; then
-    EMS_SCRIPT="${SCRIPT_DIR}/ems.sh"
-  elif [[ -x "${SCRIPT_DIR}/ems" ]]; then
-    EMS_SCRIPT="${SCRIPT_DIR}/ems"
-  else
-    die "ems.sh (or ems) not found or not executable in ${SCRIPT_DIR}"
-  fi
+  if [[ -n "$ROOM_CODE" ]]; then
+    # Accept both ems.sh (repo) and ems (dotfiles, extensions truncated)
+    if [[ -x "${SCRIPT_DIR}/ems.sh" ]]; then
+      EMS_SCRIPT="${SCRIPT_DIR}/ems.sh"
+    elif [[ -x "${SCRIPT_DIR}/ems" ]]; then
+      EMS_SCRIPT="${SCRIPT_DIR}/ems"
+    else
+      die "ems.sh (or ems) not found or not executable in ${SCRIPT_DIR}"
+    fi
 
-  # Accept both connect.sh (repo) and connect (dotfiles, extensions truncated)
-  if [[ -x "${SCRIPT_DIR}/connect.sh" ]]; then
-    CONNECT_SCRIPT="${SCRIPT_DIR}/connect.sh"
-  elif [[ -x "${SCRIPT_DIR}/connect" ]]; then
-    CONNECT_SCRIPT="${SCRIPT_DIR}/connect"
-  else
-    die "connect.sh (or connect) not found or not executable in ${SCRIPT_DIR}"
+    # Accept both connect.sh (repo) and connect (dotfiles, extensions truncated)
+    if [[ -x "${SCRIPT_DIR}/connect.sh" ]]; then
+      CONNECT_SCRIPT="${SCRIPT_DIR}/connect.sh"
+    elif [[ -x "${SCRIPT_DIR}/connect" ]]; then
+      CONNECT_SCRIPT="${SCRIPT_DIR}/connect"
+    else
+      die "connect.sh (or connect) not found or not executable in ${SCRIPT_DIR}"
+    fi
   fi
 
   if ! command -v efficient &>/dev/null; then
@@ -217,24 +221,27 @@ check_deps() {
 # --- EXPORT FILE HANDLING ---
 
 find_export_file() {
-  local candidates=()
-  # shellcheck disable=SC2206
-  candidates=( $(ls "${WORK_DIR}"/SmartClassroom.????-??-?? 2>/dev/null | sort) )
-  if [[ ${#candidates[@]} -eq 0 ]]; then
-    return 1
-  fi
-  EXPORT_FILE="${candidates[-1]}"
+  local f="${WORK_DIR}/SmartClassroom"
+  [[ -f "$f" ]] || return 1
+  EXPORT_FILE="$f"
   return 0
 }
 
 check_file_age() {
   local file="$1"
-  local file_date="${file##*.}"
-  local file_epoch today_epoch age_days
+  local file_date file_epoch today_epoch age_days
 
-  file_epoch=$(date -d "$file_date" +%s 2>/dev/null \
-    || date -j -f '%Y-%m-%d' "$file_date" +%s 2>/dev/null \
-    || echo 0)
+  file_date=$(grep -m1 '^# Exported: ' "$file" 2>/dev/null | awk '{print $3}')
+
+  if [[ -n "$file_date" ]]; then
+    file_epoch=$(date -d "$file_date" +%s 2>/dev/null \
+      || date -j -f '%Y-%m-%d' "$file_date" +%s 2>/dev/null \
+      || echo 0)
+  else
+    # No header — fall back to file mtime
+    file_epoch=$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null || echo 0)
+  fi
+
   today_epoch=$(date +%s)
   age_days=$(( (today_epoch - file_epoch) / 86400 ))
 
@@ -246,18 +253,24 @@ check_file_age() {
 }
 
 refresh_export() {
-  local outfile="${WORK_DIR}/SmartClassroom.$(date +%F)"
+  local outfile="${WORK_DIR}/SmartClassroom"
   info "${CYAN}Refreshing SmartClassroom export → ${outfile}${NC}"
+
+  local tmpfile
+  tmpfile=$(mktemp)
 
   # --no-pager is required: without it efficient pipes through less, which
   # opens /dev/tty directly and nothing is captured by the file redirect.
-  if ! efficient vlan show SmartClassroom --no-pager > "$outfile"; then
+  if ! efficient vlan show SmartClassroom --no-pager > "$tmpfile"; then
     warn "efficient exited non-zero — export may be incomplete"
-    if [[ ! -s "$outfile" ]]; then
-      rm -f "$outfile"
+    if [[ ! -s "$tmpfile" ]]; then
+      rm -f "$tmpfile"
       die "Refresh failed — no data written"
     fi
   fi
+
+  { echo "# Exported: $(date +%F)"; cat "$tmpfile"; } > "$outfile"
+  rm -f "$tmpfile"
 
   EXPORT_FILE="$outfile"
   info "${GREEN}Export refreshed: ${outfile}${NC}"
@@ -536,6 +549,7 @@ main() {
 
   if $REFRESH; then
     refresh_export
+    [[ -z "$ROOM_CODE" ]] && exit 0
   elif ! find_export_file; then
     warn "No SmartClassroom export found in ${WORK_DIR}"
     if command -v efficient &>/dev/null; then
@@ -548,7 +562,7 @@ main() {
         die "No export file — cannot continue"
       fi
     else
-      die "No export file found and efficient not in PATH — run: efficient vlan show SmartClassroom --no-pager > ${WORK_DIR}/SmartClassroom.\$(date +%F)"
+      die "No export file found and efficient not in PATH — run: efficient vlan show SmartClassroom --no-pager > ${WORK_DIR}/SmartClassroom"
     fi
   fi
 
