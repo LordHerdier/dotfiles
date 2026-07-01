@@ -14,8 +14,9 @@
 #        to connect.sh.
 #
 # USAGE:
-#   classroom.sh [-v|--verbose] [-h|--help] [--no-ems] [--refresh]
-#                [--method <method>] <room_code> [-- <command> [args...]]
+#   classroom.sh [-v|--verbose] [-h|--help] [--no-ems] [--refresh] [--info]
+#                [--log] [--device <type>] [--method <method>] <room_code>
+#                [-- <command> [args...]]
 #
 #   <room_code>
 #       Room code to connect to (e.g. "FH0111", "AH1301"). Case-insensitive.
@@ -35,6 +36,20 @@
 #       'efficient vlan show SmartClassroom --no-pager'. Requires efficient
 #       to be in PATH.
 #
+#   --info
+#       Print the room's devices and their reachability, then exit without
+#       connecting. A read-only triage view.
+#
+#   --log
+#       Open the activity log (LOG_FILE) in $VISUAL/$EDITOR (falls back to vi)
+#       and exit. No room code required.
+#
+#   --device <type>
+#       Auto-select the device whose type matches <type> (case-insensitive;
+#       e.g. "dmps", "panel", "hdps"), skipping the interactive prompt. Matches
+#       the device type exactly first, then by prefix. If the match is ambiguous
+#       the selection menu is shown; if nothing matches, all devices are shown.
+#
 #   --method <admin|crestron|telnet>
 #       Passed through to connect.sh — skip the cascade and use only this
 #       connection method.
@@ -47,6 +62,8 @@
 #   classroom.sh FH0111                  # Check EMS, find devices, connect
 #   classroom.sh --no-ems AH1301         # Skip EMS check
 #   classroom.sh --refresh FH0111        # Refresh export, then connect
+#   classroom.sh --info FH0111           # Show devices + reachability, no connect
+#   classroom.sh --device dmps FH0111    # Skip the prompt, connect to the DMPS
 #   classroom.sh FH0111 -- ver           # Run 'ver' on the selected device
 #   classroom.sh --method telnet PH0302  # Force telnet connection
 #
@@ -58,9 +75,31 @@
 #   panelviewer  — Optional. Must be in PATH. When present, offered as an
 #                  alternative to SSH for PANEL/TSW750 devices.
 #
+# CONFIGURATION:
+#   Settings are read from a sourced shell config file (KEY="value" lines):
+#     ${XDG_CONFIG_HOME:-~/.config}/classroom/config
+#   Override the location with CLASSROOM_CONFIG=/path/to/config. On first run
+#   a commented template listing every key and its default is written there.
+#   Recognized keys (all optional; built-in defaults shown):
+#     EXPORT_PATH       Path to the SmartClassroom export (~/work/SmartClassroom)
+#     VLAN_NAME         VLAN name passed to 'efficient vlan show' (SmartClassroom)
+#     STALE_DAYS        Age in days before the export is warned as stale (1)
+#     SSH_PORT          Port probed for SSH reachability (22)
+#     TELNET_PORT       Port probed for Crestron console reachability (41795)
+#     PROBE_TIMEOUT     Per-probe timeout in seconds for TCP/ICMP checks (1)
+#     PANEL_LABELS      Space-separated device labels offered PanelViewer (PANEL TSW750)
+#     PROJECTOR_PREFIX  Label prefix treated as a web-only projector (PROJ)
+#     LOG_FILE          Path to the activity log (see LOGGING)
+#
+# LOGGING:
+#   Each EMS check, device lookup, export refresh, and connection handoff is
+#   appended as a timestamped line to LOG_FILE, which defaults to
+#     ${XDG_STATE_HOME:-~/.local/state}/classroom/classroom.log
+#   Logging is best-effort: a failure to write never aborts the run.
+#
 # SMART CLASSROOM EXPORT:
-#   Stored as a single file ~/work/SmartClassroom with an embedded
-#   "# Exported: YYYY-MM-DD" header written by --refresh. To refresh:
+#   Stored as a single file (EXPORT_PATH, default ~/work/SmartClassroom) with an
+#   embedded "# Exported: YYYY-MM-DD" header written by --refresh. To refresh:
 #     classroom.sh --refresh
 #   Or manually (no age-tracking header):
 #     efficient vlan show SmartClassroom --no-pager > ~/work/SmartClassroom
@@ -77,9 +116,8 @@
 
 set -euo pipefail
 
-readonly VERSION="1.1"
+readonly VERSION="1.3"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly WORK_DIR="${HOME}/work"
 
 # --- COLORS (disabled when stderr is not a TTY) ---
 if [[ -t 2 ]]; then
@@ -96,15 +134,40 @@ fi
 vecho() { $VERBOSE && echo -e "$@" >&2 || true; }
 info()  { echo -e "$@" >&2; }
 warn()  { echo -e "${YELLOW}Warning: $*${NC}" >&2; }
-die()   { echo -e "${RED}Error: $*${NC}" >&2; exit 1; }
+die()   {
+  # Optional leading numeric argument sets the exit code (defaults to 1).
+  local code=1
+  [[ "${1:-}" =~ ^[0-9]+$ ]] && { code="$1"; shift; }
+  echo -e "${RED}Error: $*${NC}" >&2
+  exit "$code"
+}
 
 # --- GLOBALS ---
 VERBOSE=false
 NO_EMS=false
 REFRESH=false
+INFO=false
+OPEN_LOG=false
 METHOD=""
+DEVICE_FILTER=""
 ROOM_CODE=""
 REMOTE_CMD=()
+
+# Configurable settings — resolved by load_config() from the config file,
+# falling back to these built-in defaults. See the CONFIGURATION header.
+CONFIG_FILE=""
+EXPORT_PATH=""
+VLAN_NAME=""
+STALE_DAYS=""
+SSH_PORT=""
+TELNET_PORT=""
+PROBE_TIMEOUT=""
+PANEL_LABELS=""
+PROJECTOR_PREFIX=""
+LOG_FILE=""
+
+# Set in check_deps: whether TCP port probing is available (needs `timeout`).
+PORT_PROBE=false
 
 EXPORT_FILE=""
 DEVICE_IPS=()
@@ -116,12 +179,101 @@ SELECTED_LABEL=""
 EMS_SCRIPT=""
 CONNECT_SCRIPT=""
 
+# --- CONFIG & LOGGING ---
+
+# Write a commented template listing every key and its default, so a first-run
+# config is self-documenting and sources to a no-op (defaults still apply).
+create_default_config() {
+  local cfg="$1" dir
+  dir="$(dirname "$cfg")"
+  mkdir -p "$dir" 2>/dev/null || { warn "Could not create config dir ${dir} — using defaults"; return; }
+
+  cat > "$cfg" 2>/dev/null <<'EOF' || { warn "Could not write ${cfg} — using defaults"; return; }
+# classroom.sh configuration — sourced as shell, so use KEY="value" syntax.
+# Every setting below is shown with its built-in default; uncomment to change.
+
+# Path to the SmartClassroom VLAN export.
+#EXPORT_PATH="$HOME/work/SmartClassroom"
+
+# VLAN name passed to 'efficient vlan show <name> --no-pager' on --refresh.
+#VLAN_NAME="SmartClassroom"
+
+# Age (in days) beyond which the export is warned as stale.
+#STALE_DAYS=1
+
+# Ports probed to determine device reachability.
+#SSH_PORT=22
+#TELNET_PORT=41795
+
+# Per-probe timeout in seconds for the TCP/ICMP reachability checks.
+#PROBE_TIMEOUT=1
+
+# Space-separated device labels offered a PanelViewer alternative to SSH.
+#PANEL_LABELS="PANEL TSW750"
+
+# Label prefix treated as a web-only projector (opened in a browser).
+#PROJECTOR_PREFIX="PROJ"
+
+# Activity log location. Defaults under $XDG_STATE_HOME (~/.local/state).
+#LOG_FILE="$HOME/.local/state/classroom/classroom.log"
+EOF
+
+  info "${CYAN}Wrote default config → ${cfg}${NC}"
+}
+
+# Resolve all configurable settings. Precedence: value set in the config file
+# (or environment, since the file is sourced) wins; otherwise the built-in
+# default is applied. Creates a template on first run.
+load_config() {
+  CONFIG_FILE="${CLASSROOM_CONFIG:-${XDG_CONFIG_HOME:-${HOME}/.config}/classroom/config}"
+
+  if [[ -f "$CONFIG_FILE" ]]; then
+    vecho "${CYAN}Loading config: ${CONFIG_FILE}${NC}"
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE" || die "Failed to load config file: ${CONFIG_FILE}"
+  else
+    create_default_config "$CONFIG_FILE"
+  fi
+
+  EXPORT_PATH="${EXPORT_PATH:-${HOME}/work/SmartClassroom}"
+  VLAN_NAME="${VLAN_NAME:-SmartClassroom}"
+  STALE_DAYS="${STALE_DAYS:-1}"
+  SSH_PORT="${SSH_PORT:-22}"
+  TELNET_PORT="${TELNET_PORT:-41795}"
+  PROBE_TIMEOUT="${PROBE_TIMEOUT:-1}"
+  PANEL_LABELS="${PANEL_LABELS:-PANEL TSW750}"
+  PROJECTOR_PREFIX="${PROJECTOR_PREFIX:-PROJ}"
+  LOG_FILE="${LOG_FILE:-${XDG_STATE_HOME:-${HOME}/.local/state}/classroom/classroom.log}"
+
+  # Prepare the log directory once; failures degrade to a no-op in log().
+  mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+}
+
+# Append a timestamped activity line to LOG_FILE. Best-effort: never aborts the
+# run (guarded for `set -e`), so a read-only or missing log dir is harmless.
+log() {
+  local ts
+  ts="$(date +%FT%T)"
+  printf '%s %s\n' "$ts" "$*" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# --log: open the activity log in the user's editor and exit. Unquoted "$editor"
+# is intentional so EDITOR values with flags (e.g. "code --wait") word-split.
+open_log() {
+  local editor="${VISUAL:-${EDITOR:-vi}}"
+  [[ -f "$LOG_FILE" ]] || warn "No log yet at ${LOG_FILE} — opening a new file"
+  info "${CYAN}Opening log (${editor}) → ${LOG_FILE}${NC}"
+  # shellcheck disable=SC2086
+  exec $editor "$LOG_FILE"
+}
+
 # --- HELP ---
 
 print_help() {
   cat >&2 <<EOF
 Usage: $(basename "$0") [-v|--verbose] [-h|--help] [--no-ems] [--refresh]
-                 [--method <method>] <room_code> [-- <command> [args...]]
+                 [--info] [--log] [--device <type>] [--method <method>]
+                 <room_code> [-- <command> [args...]]
 
 Connect to a Crestron AV device by room code.
 
@@ -131,11 +283,20 @@ Options:
   --version              Print version and exit
   --no-ems               Skip EMS availability check
   --refresh              Refresh SmartClassroom export via efficient before searching
+  --info                 Show devices + reachability for the room, then exit (no connect)
+  --log                  Open the activity log in \$VISUAL/\$EDITOR and exit (no room code)
+  --device <type>        Auto-select the device whose type matches (e.g. dmps, panel);
+                         skips the selection prompt. Falls back to the menu if ambiguous.
   --method <method>      Only attempt the given connection method (admin|crestron|telnet)
   --                     End of flags; remaining args are passed as a remote command
 
 Arguments:
   <room_code>  Room code to target (e.g. FH0111, AH1301). Case-insensitive.
+
+Files:
+  Config:  \${XDG_CONFIG_HOME:-~/.config}/classroom/config  (override: CLASSROOM_CONFIG)
+  Log:     \${XDG_STATE_HOME:-~/.local/state}/classroom/classroom.log  (override: LOG_FILE)
+  A commented config template is created on first run.
 
 Exit codes:
   Propagates connect.sh exit codes (0/1/64/69/77)
@@ -152,33 +313,37 @@ parse_args() {
       --version)    echo "classroom.sh $VERSION"; exit 0 ;;
       --no-ems)     NO_EMS=true; shift ;;
       --refresh)    REFRESH=true; shift ;;
+      --info)       INFO=true; shift ;;
+      --log|--logs) OPEN_LOG=true; shift ;;
+      --device)
+        shift
+        [[ $# -gt 0 ]] || die 64 "--device requires an argument (e.g. dmps, panel, hdps)"
+        DEVICE_FILTER="$1"
+        shift
+        ;;
       --method)
         shift
-        if [[ $# -eq 0 ]]; then
-          echo -e "${RED}Error: --method requires an argument (admin|crestron|telnet)${NC}" >&2
-          exit 64
-        fi
+        [[ $# -gt 0 ]] || die 64 "--method requires an argument (admin|crestron|telnet)"
         case "$1" in
           admin|crestron|telnet) METHOD="$1" ;;
-          *) echo -e "${RED}Error: Unknown method '$1' — use admin, crestron, or telnet${NC}" >&2; exit 64 ;;
+          *) die 64 "Unknown method '$1' — use admin, crestron, or telnet" ;;
         esac
         shift
         ;;
       --) shift; REMOTE_CMD=("$@"); break ;;
-      -*) echo -e "${RED}Error: Unknown flag: $1${NC}" >&2; exit 64 ;;
+      -*) die 64 "Unknown flag: $1" ;;
       *)
         if [[ -z "$ROOM_CODE" ]]; then
           ROOM_CODE="${1^^}"  # normalize to uppercase
           shift
         else
-          echo -e "${RED}Error: Unexpected argument: $1${NC}" >&2
-          exit 64
+          die 64 "Unexpected argument: $1"
         fi
         ;;
     esac
   done
 
-  if [[ -z "$ROOM_CODE" ]] && ! $REFRESH; then
+  if [[ -z "$ROOM_CODE" ]] && ! $REFRESH && ! $OPEN_LOG; then
     echo -e "${RED}Error: No room code provided.${NC}" >&2
     print_help
     exit 64
@@ -195,7 +360,7 @@ check_deps() {
     elif [[ -x "${SCRIPT_DIR}/ems" ]]; then
       EMS_SCRIPT="${SCRIPT_DIR}/ems"
     else
-      die "ems.sh (or ems) not found or not executable in ${SCRIPT_DIR}"
+      die 69 "ems.sh (or ems) not found or not executable in ${SCRIPT_DIR}"
     fi
 
     # Accept both connect.sh (repo) and connect (dotfiles, extensions truncated)
@@ -204,26 +369,30 @@ check_deps() {
     elif [[ -x "${SCRIPT_DIR}/connect" ]]; then
       CONNECT_SCRIPT="${SCRIPT_DIR}/connect"
     else
-      die "connect.sh (or connect) not found or not executable in ${SCRIPT_DIR}"
+      die 69 "connect.sh (or connect) not found or not executable in ${SCRIPT_DIR}"
     fi
   fi
 
   if ! command -v efficient &>/dev/null; then
     if $REFRESH; then
-      echo -e "${RED}Error: 'efficient' not found in PATH — cannot run --refresh${NC}" >&2
-      exit 69
+      die 69 "'efficient' not found in PATH — cannot run --refresh"
     else
       warn "efficient not in PATH — --refresh will not be available"
     fi
+  fi
+
+  # TCP port probing needs `timeout` to bound the connect() on filtered ports;
+  # without it we fall back to ICMP-only reachability.
+  if command -v timeout &>/dev/null; then
+    PORT_PROBE=true
   fi
 }
 
 # --- EXPORT FILE HANDLING ---
 
 find_export_file() {
-  local f="${WORK_DIR}/SmartClassroom"
-  [[ -f "$f" ]] || return 1
-  EXPORT_FILE="$f"
+  [[ -f "$EXPORT_PATH" ]] || return 1
+  EXPORT_FILE="$EXPORT_PATH"
   return 0
 }
 
@@ -247,13 +416,13 @@ check_file_age() {
 
   info "${CYAN}Export : $(basename "$file") (${age_days} day(s) old)${NC}"
 
-  if [[ $age_days -gt 1 ]]; then
+  if [[ $age_days -gt $STALE_DAYS ]]; then
     warn "Export is ${age_days} day(s) old — run with --refresh to update"
   fi
 }
 
 refresh_export() {
-  local outfile="${WORK_DIR}/SmartClassroom"
+  local outfile="$EXPORT_PATH"
   info "${CYAN}Refreshing SmartClassroom export → ${outfile}${NC}"
 
   local tmpfile
@@ -261,10 +430,11 @@ refresh_export() {
 
   # --no-pager is required: without it efficient pipes through less, which
   # opens /dev/tty directly and nothing is captured by the file redirect.
-  if ! efficient vlan show SmartClassroom --no-pager > "$tmpfile"; then
+  if ! efficient vlan show "$VLAN_NAME" --no-pager > "$tmpfile"; then
     warn "efficient exited non-zero — export may be incomplete"
     if [[ ! -s "$tmpfile" ]]; then
       rm -f "$tmpfile"
+      log "REFRESH vlan=${VLAN_NAME} file=${outfile} status=failed"
       die "Refresh failed — no data written"
     fi
   fi
@@ -273,6 +443,7 @@ refresh_export() {
   rm -f "$tmpfile"
 
   EXPORT_FILE="$outfile"
+  log "REFRESH vlan=${VLAN_NAME} file=${outfile} status=ok"
   info "${GREEN}Export refreshed: ${outfile}${NC}"
 }
 
@@ -301,15 +472,19 @@ run_ems_check() {
   ems_stderr=$(cat "$ems_stderr_file")
 
   if [[ $ems_rc -eq 0 ]]; then
+    log "QUERY ems room=${room} result=free"
     vecho "${GREEN}Room is free — proceeding.${NC}"
   elif [[ $ems_rc -eq 1 ]]; then
     if echo "$ems_stderr" | grep -q '^ERROR:'; then
+      log "QUERY ems room=${room} result=error"
       warn "EMS check failed (${ems_stderr%%$'\n'*}) — skipping availability check"
     else
       # Room is booked; BOOKED line already printed to stdout by ems.sh
+      log "QUERY ems room=${room} result=booked"
       warn "Room appears to be IN USE — proceeding anyway"
     fi
   else
+    log "QUERY ems room=${room} result=rc${ems_rc}"
     warn "EMS check exited with code ${ems_rc} — skipping availability check"
     [[ -n "$ems_stderr" ]] && vecho "$ems_stderr"
   fi
@@ -317,33 +492,68 @@ run_ems_check() {
 
 # --- DEVICE LOOKUP ---
 
+# Derive a device-type label from a hostname: the segment between the first '-'
+# and the first '.' (e.g. "AH1301-HDPS.id.siue.edu" -> "HDPS"), uppercased.
+# Returns the result in REPLY (avoids a subshell per call). Empty for inputs
+# with no '-' such as a bare IP address.
+label_from_host() {
+  local host="$1" devtype
+  if [[ "$host" == *-* ]]; then
+    devtype="${host#*-}"
+    devtype="${devtype%%.*}"
+    REPLY="${devtype^^}"
+  else
+    REPLY=""
+  fi
+}
+
 lookup_devices() {
   local file="$1" room="$2"
 
   DEVICE_IPS=()
   DEVICE_LABELS=()
 
-  # NF>=4 skips blank-MAC Reserved-only lines (NF==2)
-  # Anchor match on "^ROOM-" to prevent prefix false-matches
-  while IFS= read -r line; do
-    local ip hostname devtype
-    ip=$(awk '{print $1}' <<< "$line")
-    hostname=$(awk '{print $3}' <<< "$line")
-
-    # Extract device type between first '-' and first '.' in hostname field
-    devtype="${hostname#*-}"
-    devtype="${devtype%%.*}"
-    devtype="${devtype^^}"
-
+  # awk emits "ip hostname" for matching lines in a single pass:
+  #   NF>=4 skips blank-MAC Reserved-only lines (NF==2)
+  #   the "^ROOM-" anchor prevents prefix false-matches
+  local ip hostname
+  while read -r ip hostname; do
+    label_from_host "$hostname"
     DEVICE_IPS+=("$ip")
-    DEVICE_LABELS+=("$devtype")
-  done < <(awk -v room="$room" 'NF>=4 && toupper($3) ~ "^"room"-"' "$file")
+    DEVICE_LABELS+=("$REPLY")
+  done < <(awk -v room="$room" 'NF>=4 && toupper($3) ~ "^"room"-" {print $1, $3}' "$file")
+
+  log "QUERY lookup room=${room} devices=${#DEVICE_IPS[@]}"
 }
 
-# --- PING CHECK ---
+# --- REACHABILITY PROBE ---
 
-# Pings all IPs in DEVICE_IPS in parallel; populates DEVICE_STATUSES array.
-ping_devices() {
+# Returns 0 if a TCP connection to ip:port opens within 1s. `timeout` bounds the
+# connect() so filtered ports (which never send RST) don't hang the probe.
+check_port() {
+  local ip="$1" port="$2"
+  timeout "$PROBE_TIMEOUT" bash -c "exec 3<>/dev/tcp/${ip}/${port}" 2>/dev/null
+}
+
+# Prints a single reachability status word for one IP:
+#   SSH     — port 22 open (connect.sh admin/crestron methods will reach it)
+#   TELNET  — port 41795 open (Crestron legacy console reachable)
+#   PING    — answers ICMP but no console port open (up but likely wedged)
+#   OFFLINE — no response
+# Falls back to ONLINE/OFFLINE (ICMP only) when `timeout` is unavailable.
+probe_one() {
+  local ip="$1"
+  if $PORT_PROBE; then
+    if check_port "$ip" "$SSH_PORT";    then echo "SSH";    return; fi
+    if check_port "$ip" "$TELNET_PORT"; then echo "TELNET"; return; fi
+    if ping -c 1 -W "$PROBE_TIMEOUT" "$ip" &>/dev/null; then echo "PING"; else echo "OFFLINE"; fi
+  else
+    if ping -c 1 -W "$PROBE_TIMEOUT" "$ip" &>/dev/null; then echo "ONLINE"; else echo "OFFLINE"; fi
+  fi
+}
+
+# Probes all IPs in DEVICE_IPS in parallel; populates DEVICE_STATUSES in order.
+probe_devices() {
   DEVICE_STATUSES=()
   local tmpfiles=() pids=() i
 
@@ -353,7 +563,7 @@ ping_devices() {
     local tmp
     tmp=$(mktemp)
     tmpfiles+=("$tmp")
-    (ping -c 1 -W 1 "${DEVICE_IPS[i]}" &>/dev/null && echo "ONLINE" || echo "OFFLINE") > "$tmp" &
+    probe_one "${DEVICE_IPS[i]}" > "$tmp" &
     pids+=($!)
   done
 
@@ -365,6 +575,25 @@ ping_devices() {
     DEVICE_STATUSES+=("$(cat "$tmp")")
     rm -f "$tmp"
   done
+}
+
+# Sets REPLY to the color for a reachability status word.
+status_color() {
+  case "$1" in
+    SSH|TELNET|ONLINE) REPLY="$GREEN" ;;
+    PING)              REPLY="$YELLOW" ;;
+    *)                 REPLY="$RED" ;;
+  esac
+}
+
+# Prints one tabular device row to stderr. Args: index, optional line prefix
+# (e.g. "  1) "). Uses DEVICE_LABELS/IPS/STATUSES.
+print_device_row() {
+  local i="$1" prefix="${2:-}"
+  local status="${DEVICE_STATUSES[i]}" sc
+  status_color "$status"; sc="$REPLY"
+  printf "%b%-12s  %-18s  %b%s%b\n" \
+    "$prefix" "${DEVICE_LABELS[i]}" "${DEVICE_IPS[i]}" "$sc" "$status" "$NC" >&2
 }
 
 # --- INTERACTIVE DEVICE SELECTION ---
@@ -383,7 +612,7 @@ handle_not_found() {
   case "$choice" in
     1)
       if ! command -v efficient &>/dev/null; then
-        die "efficient not found in PATH — cannot refresh"
+        die 69 "efficient not found in PATH — cannot refresh"
       fi
       refresh_export
       lookup_devices "$EXPORT_FILE" "$ROOM_CODE"
@@ -396,7 +625,11 @@ handle_not_found() {
       local manual
       read -rp "Enter hostname or IP: " manual
       [[ -z "$manual" ]] && die "No target entered — aborting"
+      # Derive the label so is_panel/is_projector handling still applies to
+      # manually-entered hostnames (bare IPs yield an empty label).
+      label_from_host "$manual"
       SELECTED_IP="$manual"
+      SELECTED_LABEL="$REPLY"
       ;;
     3|"")
       die "Aborted"
@@ -407,6 +640,48 @@ handle_not_found() {
   esac
 }
 
+# Narrows DEVICE_IPS/LABELS to entries matching DEVICE_FILTER (case-insensitive):
+# exact type match first, then prefix match. Leaves the arrays untouched (and
+# warns) when nothing matches, so selection falls back to the full list.
+apply_device_filter() {
+  local f="${DEVICE_FILTER^^}" i
+  local ips=() labels=()
+
+  for (( i=0; i<${#DEVICE_LABELS[@]}; i++ )); do
+    [[ "${DEVICE_LABELS[i]^^}" == "$f" ]] && { ips+=("${DEVICE_IPS[i]}"); labels+=("${DEVICE_LABELS[i]}"); }
+  done
+  if [[ ${#ips[@]} -eq 0 ]]; then
+    for (( i=0; i<${#DEVICE_LABELS[@]}; i++ )); do
+      [[ "${DEVICE_LABELS[i]^^}" == "$f"* ]] && { ips+=("${DEVICE_IPS[i]}"); labels+=("${DEVICE_LABELS[i]}"); }
+    done
+  fi
+
+  if [[ ${#ips[@]} -eq 0 ]]; then
+    warn "No '${DEVICE_FILTER}' device in ${ROOM_CODE} — showing all devices"
+    return
+  fi
+
+  DEVICE_IPS=("${ips[@]}")
+  DEVICE_LABELS=("${labels[@]}")
+}
+
+# --info: print devices + reachability for the room and return (no connection).
+show_info() {
+  local count=${#DEVICE_IPS[@]}
+  if [[ $count -eq 0 ]]; then
+    warn "No devices found for '${ROOM_CODE}' in $(basename "$EXPORT_FILE")"
+    return
+  fi
+
+  probe_devices
+  info ""
+  info "${BOLD}${count} device(s) for ${ROOM_CODE}:${NC}"
+  local i
+  for (( i=0; i<count; i++ )); do
+    print_device_row "$i" "  "
+  done
+}
+
 select_device() {
   local count=${#DEVICE_IPS[@]}
 
@@ -415,13 +690,26 @@ select_device() {
     return
   fi
 
-  ping_devices
+  if [[ -n "$DEVICE_FILTER" ]]; then
+    apply_device_filter
+    count=${#DEVICE_IPS[@]}
+  fi
+
+  probe_devices
   info ""
 
+  # --device narrowed to exactly one match: select it without a prompt.
+  if [[ -n "$DEVICE_FILTER" && $count -eq 1 ]]; then
+    SELECTED_IP="${DEVICE_IPS[0]}"
+    SELECTED_LABEL="${DEVICE_LABELS[0]}"
+    info "${BOLD}Selected ${DEVICE_LABELS[0]} (matched --device ${DEVICE_FILTER}):${NC}"
+    print_device_row 0 "  "
+    return
+  fi
+
   if [[ $count -eq 1 ]]; then
-    local status="${DEVICE_STATUSES[0]}"
-    local sc; [[ "$status" == "ONLINE" ]] && sc="$GREEN" || sc="$RED"
-    info "${BOLD}Found 1 device: ${DEVICE_LABELS[0]}  (${DEVICE_IPS[0]})  ${sc}${status}${NC}"
+    info "${BOLD}Found 1 device:${NC}"
+    print_device_row 0 "  "
     local yn
     read -rp "Connect? [Y/n] " yn
     yn="${yn:-Y}"
@@ -437,10 +725,7 @@ select_device() {
   info "${BOLD}Found ${count} device(s) for ${ROOM_CODE}:${NC}"
   local i
   for (( i=0; i<count; i++ )); do
-    local status="${DEVICE_STATUSES[i]}"
-    local sc; [[ "$status" == "ONLINE" ]] && sc="$GREEN" || sc="$RED"
-    printf "  ${CYAN}%d)${NC} %-12s  %-18s  ${sc}%s${NC}\n" \
-      "$((i+1))" "${DEVICE_LABELS[i]}" "${DEVICE_IPS[i]}" "$status" >&2
+    print_device_row "$i" "$(printf '  %b%d)%b ' "$CYAN" "$((i+1))" "$NC")"
   done
   info ""
 
@@ -459,19 +744,18 @@ select_device() {
 # --- PANEL VIEWER ---
 
 is_panel() {
-  case "${SELECTED_LABEL^^}" in
-    PANEL|TSW750) return 0 ;;
-    *) return 1 ;;
-  esac
+  local lbl="${SELECTED_LABEL^^}" p
+  for p in $PANEL_LABELS; do
+    [[ "$lbl" == "${p^^}" ]] && return 0
+  done
+  return 1
 }
 
 # --- PROJECTOR ---
 
 is_projector() {
-  case "${SELECTED_LABEL^^}" in
-    PROJ*) return 0 ;;
-    *) return 1 ;;
-  esac
+  local prefix="${PROJECTOR_PREFIX^^}"
+  [[ -n "$prefix" && "${SELECTED_LABEL^^}" == "$prefix"* ]]
 }
 
 # Projectors have no SSH access — always open the web interface.
@@ -483,6 +767,7 @@ maybe_open_projector() {
   info "${CYAN}----------------------------------------${NC}"
   info "${CYAN}Opening ${url} for ${ROOM_CODE}${NC}"
   info "${CYAN}----------------------------------------${NC}"
+  log "CONNECT room=${ROOM_CODE} target=${SELECTED_IP} label=${SELECTED_LABEL:-?} method=web url=${url}"
   xdg-open "$url"
   exit 0
 }
@@ -514,6 +799,7 @@ maybe_open_viewer() {
       info "${CYAN}----------------------------------------${NC}"
       info "${CYAN}Opening viewer for ${ROOM_CODE} → ${SELECTED_IP}${NC}"
       info "${CYAN}----------------------------------------${NC}"
+      log "CONNECT room=${ROOM_CODE} target=${SELECTED_IP} label=${SELECTED_LABEL:-?} method=viewer"
       exec panelviewer "$SELECTED_IP"
       ;;
     *) warn "Invalid choice — defaulting to SSH" ;;
@@ -538,6 +824,7 @@ do_connect() {
     connect_args+=("--" "${REMOTE_CMD[@]}")
   fi
 
+  log "CONNECT room=${ROOM_CODE} target=${target} label=${SELECTED_LABEL:-?} method=${METHOD:-auto}${REMOTE_CMD:+ cmd=${REMOTE_CMD[*]}}"
   exec "$CONNECT_SCRIPT" "${connect_args[@]}"
 }
 
@@ -545,13 +832,15 @@ do_connect() {
 
 main() {
   parse_args "$@"
+  load_config
+  $OPEN_LOG && open_log
   check_deps
 
   if $REFRESH; then
     refresh_export
     [[ -z "$ROOM_CODE" ]] && exit 0
   elif ! find_export_file; then
-    warn "No SmartClassroom export found in ${WORK_DIR}"
+    warn "No SmartClassroom export found at ${EXPORT_PATH}"
     if command -v efficient &>/dev/null; then
       local yn
       read -rp "Fetch now with efficient? [Y/n] " yn
@@ -562,7 +851,7 @@ main() {
         die "No export file — cannot continue"
       fi
     else
-      die "No export file found and efficient not in PATH — run: efficient vlan show SmartClassroom --no-pager > ${WORK_DIR}/SmartClassroom"
+      die 69 "No export file found and efficient not in PATH — run: efficient vlan show ${VLAN_NAME} --no-pager > ${EXPORT_PATH}"
     fi
   fi
 
@@ -576,6 +865,11 @@ main() {
   info ""
   info "${CYAN}Looking up devices...${NC}"
   lookup_devices "$EXPORT_FILE" "$ROOM_CODE"
+
+  if $INFO; then
+    show_info
+    exit 0
+  fi
 
   select_device
   maybe_open_viewer
