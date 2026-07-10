@@ -175,6 +175,9 @@ DEVICE_LABELS=()
 DEVICE_STATUSES=()
 SELECTED_IP=""
 SELECTED_LABEL=""
+MULTI=false
+SELECTED_IPS=()
+SELECTED_LABELS=()
 
 EMS_SCRIPT=""
 CONNECT_SCRIPT=""
@@ -729,15 +732,49 @@ select_device() {
   done
   info ""
 
-  local choice
+  local raw_choice
   while true; do
-    read -rp "Select device [1-${count}]: " choice
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
-      SELECTED_IP="${DEVICE_IPS[$((choice-1))]}"
-      SELECTED_LABEL="${DEVICE_LABELS[$((choice-1))]}"
+    read -rp "Select device(s) [1-${count}] (space/comma-separated, or 'all'): " raw_choice
+    raw_choice="${raw_choice//,/ }"
+
+    if [[ "$raw_choice" == "all" ]]; then
+      SELECTED_IPS=("${DEVICE_IPS[@]}")
+      SELECTED_LABELS=("${DEVICE_LABELS[@]}")
+      MULTI=true
       break
     fi
-    warn "Enter a number between 1 and ${count}"
+
+    local indices=() valid=true
+    declare -A _seen=()
+    for token in $raw_choice; do
+      if [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= count )); then
+        if [[ -z "${_seen[$token]+x}" ]]; then
+          _seen[$token]=1
+          indices+=("$token")
+        fi
+      else
+        valid=false
+        break
+      fi
+    done
+    unset _seen
+
+    if ! $valid || [[ ${#indices[@]} -eq 0 ]]; then
+      warn "Enter number(s) between 1 and ${count}, separated by spaces or commas"
+      continue
+    fi
+
+    if [[ ${#indices[@]} -eq 1 ]]; then
+      SELECTED_IP="${DEVICE_IPS[$((${indices[0]}-1))]}"
+      SELECTED_LABEL="${DEVICE_LABELS[$((${indices[0]}-1))]}"
+    else
+      for token in "${indices[@]}"; do
+        SELECTED_IPS+=("${DEVICE_IPS[$((token-1))]}")
+        SELECTED_LABELS+=("${DEVICE_LABELS[$((token-1))]}")
+      done
+      MULTI=true
+    fi
+    break
   done
 }
 
@@ -828,6 +865,82 @@ do_connect() {
   exec "$CONNECT_SCRIPT" "${connect_args[@]}"
 }
 
+# --- MULTI-DEVICE TMUX ---
+
+build_connect_cmd() {
+  local ip="$1"
+  local parts=("$CONNECT_SCRIPT")
+  $VERBOSE           && parts+=("-v")
+  [[ -n "$METHOD" ]] && parts+=("--method" "$METHOD")
+  parts+=("$ip")
+  [[ ${#REMOTE_CMD[@]} -gt 0 ]] && parts+=("--" "${REMOTE_CMD[@]}")
+  printf '%q ' "${parts[@]}"
+}
+
+open_tmux_session() {
+  if ! command -v tmux &>/dev/null; then
+    echo -e "${RED}Error: tmux not found in PATH — required for multi-device mode${NC}" >&2
+    exit 69
+  fi
+
+  # Projectors have no SSH; skip them in multi mode
+  local ssh_ips=() ssh_labels=() i
+  for (( i=0; i<${#SELECTED_IPS[@]}; i++ )); do
+    case "${SELECTED_LABELS[i]^^}" in
+      PROJ*)
+        warn "Skipping ${SELECTED_LABELS[i]} (${SELECTED_IPS[i]}) — projectors have no SSH"
+        ;;
+      *)
+        ssh_ips+=("${SELECTED_IPS[i]}")
+        ssh_labels+=("${SELECTED_LABELS[i]}")
+        ;;
+    esac
+  done
+
+  if [[ ${#ssh_ips[@]} -eq 0 ]]; then
+    die "No SSH-capable devices selected after filtering projectors"
+  fi
+
+  # After filtering we may be back to one device — use the normal path
+  if [[ ${#ssh_ips[@]} -eq 1 ]]; then
+    SELECTED_IP="${ssh_ips[0]}"
+    SELECTED_LABEL="${ssh_labels[0]}"
+    do_connect "$SELECTED_IP"
+    return
+  fi
+
+  local session="cls-${ROOM_CODE,,}"
+  local win="$ROOM_CODE"
+  local first_cmd target ci
+
+  first_cmd=$(build_connect_cmd "${ssh_ips[0]}")
+
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux new-window -n "$win" "$first_cmd"
+    target="$win"
+  else
+    tmux new-session -d -s "$session" -n "$win" "$first_cmd"
+    target="$session"
+  fi
+
+  tmux set-option -t "$target" remain-on-exit on
+  tmux set-option -t "$target" pane-border-status top
+  tmux select-pane -t "$target" -T "${ssh_labels[0]} ${ssh_ips[0]}"
+
+  for (( i=1; i<${#ssh_ips[@]}; i++ )); do
+    ci=$(build_connect_cmd "${ssh_ips[i]}")
+    tmux split-window -t "$target" "$ci"
+    tmux select-pane -t "$target" -T "${ssh_labels[i]} ${ssh_ips[i]}"
+    tmux select-layout -t "$target" tiled
+  done
+
+  info ""
+  info "${CYAN}Opened ${#ssh_ips[@]} panes in tmux session '${session}'.${NC}"
+  info "${CYAN}Close dead panes with: prefix + x${NC}"
+
+  [[ -z "${TMUX:-}" ]] && exec tmux attach -t "$session"
+}
+
 # --- MAIN ---
 
 main() {
@@ -872,9 +985,13 @@ main() {
   fi
 
   select_device
-  maybe_open_viewer
-  maybe_open_projector
-  do_connect "$SELECTED_IP"
+  if $MULTI; then
+    open_tmux_session
+  else
+    maybe_open_viewer
+    maybe_open_projector
+    do_connect "$SELECTED_IP"
+  fi
 }
 
 main "$@"
