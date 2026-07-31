@@ -40,7 +40,7 @@ if command -v zoxide &> /dev/null; then
 fi
 
 # Default editor
-export EDITOR=nvim
+export EDITOR=nano
 
 # XDG Base Directory Specification
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -116,5 +116,5 @@ fi
 ###############################################################################
 # Atuin
 ###############################################################################
-export PATH="$PATH:$HOME/.atuin/bin"
-eval "$(atuin init zsh)"
+#export PATH="$PATH:$HOME/.atuin/bin"
+#eval "$(atuin init zsh)"
