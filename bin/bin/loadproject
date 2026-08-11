@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
-# loadproject - fuzzy-select a .vtz program and deploy it to a Crestron device
-# Usage: loadproject <device>
+# loadproject.sh — Fuzzy-select and deploy a Crestron .vtz/.ch5z project to a device
+#
+# Presents an interactive fzf picker over all .vtz and .ch5z files in the
+# programs directory, then uploads the selected file via SFTP and triggers
+# projectload on the target device. Credentials are pulled from pass.
+#
+# Usage:
+#   bash/loadproject.sh <hostname_or_ip>
+#
+#   bash/loadproject.sh fh0111-panel.id.siue.edu
+#   bash/loadproject.sh 10.0.1.50
+#
+# Dependencies:
+#   fzf      — interactive fuzzy file picker
+#   sshpass  — non-interactive SSH/SCP password auth
+#   pass     — credential retrieval (crestron/creds/password)
+#   scp      — file upload to device
+#   ssh      — remote command execution
+#
+# Notes:
+#   - .vtz and .ch5z files are searched recursively under ~/work/classroom-production/programs
+#   - Files are uploaded to /display on the device
+#   - projectload can take 15–30 seconds; wait for it to return before rebooting
+#   - StrictHostKeyChecking is disabled; acceptable on trusted AV VLANs
 
 set -euo pipefail
 
@@ -22,16 +44,16 @@ for cmd in fzf sshpass pass scp ssh; do
     fi
 done
 
-# ── fuzzy-select .vtz file ────────────────────────────────────────────────────
+# ── fuzzy-select .vtz/.ch5z file ──────────────────────────────────────────────
 if [[ ! -d "$PROGRAMS_DIR" ]]; then
     echo "error: programs directory not found: $PROGRAMS_DIR" >&2
     exit 1
 fi
 
-FILE="$(find "$PROGRAMS_DIR" -name '*.vtz' -printf '%P\n' 2>/dev/null \
+FILE="$(find "$PROGRAMS_DIR" \( -name '*.vtz' -o -name '*.ch5z' \) -printf '%P\n' 2>/dev/null \
     | sort \
     | fzf --prompt="program > " \
-          --header="Select a .vtz to deploy to ${DEVICE}" \
+          --header="Select a .vtz/.ch5z to deploy to ${DEVICE}" \
           --delimiter='/' --with-nth=-1 \
           --preview="echo ${PROGRAMS_DIR}/{}" \
           --preview-window="right:40%:wrap" \
