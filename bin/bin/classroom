@@ -42,9 +42,11 @@
 #
 #   --diag
 #       Like --info, plus: runs DIAG_CMD over SSH on devices matching
-#       DIAG_SSH_TYPES (default: panel/HDPS), a VC-4 status lookup via
-#       room_status.sh, and an HDPS web signal-status check if HDPS_WEB_URL
-#       is configured. Read-only; exits without connecting.
+#       DIAG_SSH_TYPES (default: panel/DMPS/HDPS). If the room has an HDPS
+#       device, also runs a VC-4 status lookup (room_status.sh) and an
+#       HD-PS signal/routing/mute status snapshot (hdps_status.sh) — both
+#       are skipped for rooms without one, since neither applies. Read-only;
+#       exits without connecting.
 #
 #   --log
 #       Open the activity log (LOG_FILE) in $VISUAL/$EDITOR (falls back to vi)
@@ -75,6 +77,9 @@
 #   classroom.sh --method telnet PH0302  # Force telnet connection
 #
 # DEPENDENCIES:
+#   All co-located helper scripts below resolve via either their "<name>.sh"
+#   form or an extensionless "<name>" (e.g. as symlinked into ~/bin) — see
+#   resolve_script().
 #   ems.sh         — Co-located in the same directory as this script.
 #   connect.sh     — Co-located in the same directory as this script.
 #   efficient      — Only required when --refresh is used. Must be in PATH.
@@ -85,6 +90,10 @@
 #                    VC-4 status lookup. Requires curl and jq; reads
 #                    crestron/vc4/host, work/username, and work/password from
 #                    pass when not overridden.
+#   hdps_status.sh — Co-located in the same directory. Used by --diag for the
+#                    HD-PS routing/signal/mute status snapshot. Requires curl
+#                    and jq; reads crestron/creds/username and
+#                    crestron/creds/password from pass when not overridden.
 #
 # CONFIGURATION:
 #   Settings are read from a sourced shell config file (KEY="value" lines):
@@ -100,12 +109,11 @@
 #     PROBE_TIMEOUT     Per-probe timeout in seconds for TCP/ICMP checks (1)
 #     PANEL_LABELS      Space-separated device labels offered PanelViewer (PANEL TSW750)
 #     PROJECTOR_PREFIX  Label prefix treated as a web-only projector (PROJ)
-#     DIAG_SSH_TYPES    Device label prefixes --diag runs DIAG_CMD against (PANEL TSW750 HDPS)
+#     DIAG_SSH_TYPES    Device label prefixes --diag runs DIAG_CMD against (PANEL TSW750 HDPS DMPS)
 #     DIAG_CMD          Command run on each matched device by --diag (iptable -T)
 #     DIAG_TIMEOUT      Per-device timeout in seconds for DIAG_CMD (15)
 #     VC4_TIMEOUT       Timeout in seconds for the --diag VC-4 status lookup (35)
-#     HDPS_WEB_URL      printf template for the HDPS signal-status URL; %s is
-#                       the device IP. Unset skips the --diag HDPS web check.
+#     HDPS_TIMEOUT      Timeout in seconds for the --diag HD-PS status snapshot (20)
 #     LOG_FILE          Path to the activity log (see LOGGING)
 #
 # LOGGING:
@@ -187,7 +195,7 @@ DIAG_SSH_TYPES=""
 DIAG_CMD=""
 DIAG_TIMEOUT=""
 VC4_TIMEOUT=""
-HDPS_WEB_URL=""
+HDPS_TIMEOUT=""
 
 # Set in check_deps: whether TCP port probing is available (needs `timeout`).
 PORT_PROBE=false
@@ -242,7 +250,7 @@ create_default_config() {
 #PROJECTOR_PREFIX="PROJ"
 
 # Device label prefixes that --diag runs DIAG_CMD against over SSH.
-#DIAG_SSH_TYPES="PANEL TSW750 HDPS"
+#DIAG_SSH_TYPES="PANEL TSW750 HDPS DMPS"
 
 # Command to run on each matched device (read-only status query).
 # "-T" renders the Crestron IP table in tabular form.
@@ -256,9 +264,10 @@ create_default_config() {
 # internally — this should stay comfortably above that.
 #VC4_TIMEOUT=35
 
-# printf template for the HDPS signal-status URL — %s is replaced with the
-# device IP. Leave unset to skip the HDPS web check.
-#HDPS_WEB_URL="http://%s/signal-status"
+# Timeout (seconds) for the HD-PS status snapshot (routing/signal/mute),
+# per matched HDPS device. Runs hdps_status.sh, which logs in and does
+# three GETs — keep comfortably above a typical login+GET round trip.
+#HDPS_TIMEOUT=20
 
 # Activity log location. Defaults under $XDG_STATE_HOME (~/.local/state).
 #LOG_FILE="$HOME/.local/state/classroom/classroom.log"
@@ -290,11 +299,11 @@ load_config() {
   PANEL_LABELS="${PANEL_LABELS:-PANEL TSW750}"
   PROJECTOR_PREFIX="${PROJECTOR_PREFIX:-PROJ}"
   LOG_FILE="${LOG_FILE:-${XDG_STATE_HOME:-${HOME}/.local/state}/classroom/classroom.log}"
-  DIAG_SSH_TYPES="${DIAG_SSH_TYPES:-PANEL TSW750 HDPS}"
+  DIAG_SSH_TYPES="${DIAG_SSH_TYPES:-PANEL TSW750 HDPS DMPS}"
   DIAG_CMD="${DIAG_CMD:-iptable -T}"
   DIAG_TIMEOUT="${DIAG_TIMEOUT:-15}"
   VC4_TIMEOUT="${VC4_TIMEOUT:-35}"
-  HDPS_WEB_URL="${HDPS_WEB_URL:-}"
+  HDPS_TIMEOUT="${HDPS_TIMEOUT:-20}"
 
   # Prepare the log directory once; failures degrade to a no-op in log().
   mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
@@ -405,25 +414,28 @@ parse_args() {
 
 # --- DEPENDENCY CHECKS ---
 
+# Resolves a co-located helper script by base name, accepting either the
+# repo's "<name>.sh" form or an extensionless "<name>" (e.g. as symlinked
+# into ~/bin for direct execution). Prints the resolved path and returns 0,
+# or returns 1 if neither form is present/executable.
+resolve_script() {
+  local name="$1"
+  if [[ -x "${SCRIPT_DIR}/${name}.sh" ]]; then
+    printf '%s\n' "${SCRIPT_DIR}/${name}.sh"
+  elif [[ -x "${SCRIPT_DIR}/${name}" ]]; then
+    printf '%s\n' "${SCRIPT_DIR}/${name}"
+  else
+    return 1
+  fi
+}
+
 check_deps() {
   if [[ -n "$ROOM_CODE" ]]; then
-    # Accept both ems.sh (repo) and ems (dotfiles, extensions truncated)
-    if [[ -x "${SCRIPT_DIR}/ems.sh" ]]; then
-      EMS_SCRIPT="${SCRIPT_DIR}/ems.sh"
-    elif [[ -x "${SCRIPT_DIR}/ems" ]]; then
-      EMS_SCRIPT="${SCRIPT_DIR}/ems"
-    else
-      die 69 "ems.sh (or ems) not found or not executable in ${SCRIPT_DIR}"
-    fi
+    EMS_SCRIPT="$(resolve_script ems)" \
+      || die 69 "ems.sh (or ems) not found or not executable in ${SCRIPT_DIR}"
 
-    # Accept both connect.sh (repo) and connect (dotfiles, extensions truncated)
-    if [[ -x "${SCRIPT_DIR}/connect.sh" ]]; then
-      CONNECT_SCRIPT="${SCRIPT_DIR}/connect.sh"
-    elif [[ -x "${SCRIPT_DIR}/connect" ]]; then
-      CONNECT_SCRIPT="${SCRIPT_DIR}/connect"
-    else
-      die 69 "connect.sh (or connect) not found or not executable in ${SCRIPT_DIR}"
-    fi
+    CONNECT_SCRIPT="$(resolve_script connect)" \
+      || die 69 "connect.sh (or connect) not found or not executable in ${SCRIPT_DIR}"
   fi
 
   if ! command -v efficient &>/dev/null; then
@@ -630,6 +642,12 @@ probe_devices() {
   done
 }
 
+# Prints a green section divider (--diag uses this between its sections;
+# the existing cyan divider is reserved for the room-header/EMS framing).
+divider() {
+  info "${GREEN}----------------------------------------${NC}"
+}
+
 # Sets REPLY to the color for a reachability status word.
 status_color() {
   case "$1" in
@@ -748,6 +766,35 @@ clean_diag_output() {
   printf '%s' "$text"
 }
 
+# Condenses a raw 'iptable -T' pipe-table into one colorized line per entry
+# (CIP id, type, status, port, site/IP, plus model/description only when
+# non-empty). Splits on '|' rather than column width, since the device pads
+# fields inconsistently. Prints nothing (and lets the caller fall back to
+# the raw text) if the input doesn't look like an iptable dump.
+condense_iptable() {
+  awk -F'|' -v red="$RED" -v green="$GREEN" -v yellow="$YELLOW" -v nc="$NC" '
+    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    /^-+$/ { next }
+    /CIP_ID/ { next }
+    /^[[:space:]]*IP Table:[[:space:]]*$/ { next }
+    NF < 6 { next }
+    {
+      id = trim($1); type = trim($2); status = trim($3); port = trim($5); site = trim($6);
+      model = (NF >= 7) ? trim($7) : "";
+      desc  = (NF >= 8) ? trim($8) : "";
+      if (id == "") next
+      color = nc
+      if (status == "ONLINE")       color = green
+      else if (status == "OFFLINE") color = red
+      else if (status != "")        color = yellow
+      line = sprintf("  CIP %-4s %-6s %s%-8s%s port=%-6s %s", id, type, color, status, nc, port, site)
+      if (model != "") line = line " [" model "]"
+      if (desc  != "") line = line " (" desc ")"
+      print line
+    }
+  '
+}
+
 # Runs DIAG_CMD (default 'iptable -T') on each SSH-reachable device whose
 # label matches DIAG_SSH_TYPES, in parallel. Populates DIAG_OUTPUTS in
 # DEVICE_IPS order (empty string for devices that were skipped).
@@ -803,14 +850,11 @@ probe_iptables() {
 #                      so no credential handling is needed here.
 check_vc4_status() {
   local vc4_script
-  if [[ -x "${SCRIPT_DIR}/room_status.sh" ]]; then
-    vc4_script="${SCRIPT_DIR}/room_status.sh"
-  else
-    warn "room_status.sh not found or not executable in ${SCRIPT_DIR} — skipping VC-4 check"
+  vc4_script="$(resolve_script room_status)" || {
+    warn "room_status.sh (or room_status) not found or not executable in ${SCRIPT_DIR} — skipping VC-4 check"
     return
-  fi
+  }
 
-  info ""
   info "${BOLD}VC-4 status:${NC}"
 
   local output rc
@@ -821,6 +865,12 @@ check_vc4_status() {
 
   case $rc in
     0)
+      # awk, not sed: sed's replacement text treats a leading "\0" (which
+      # $GREEN/$RED start with, as literal "\033...") as a whole-match
+      # backreference, mangling the color codes. awk's gsub has no such trap.
+      output=$(awk -v green="$GREEN" -v red="$RED" -v nc="$NC" '
+        { gsub(/\<ONLINE\>/, green "&" nc); gsub(/\<OFFLINE\>/, red "&" nc); print }
+      ' <<< "$output")
       while IFS= read -r line; do info "  ${line}"; done <<< "$output"
       ;;
     1)
@@ -839,31 +889,62 @@ check_vc4_status() {
   esac
 }
 
-# Placeholder — fill in once the HDPS signal-status page/API is known.
+# --- HD-PS STATUS ---
+# DEPENDENCIES:
+#   hdps_status.sh — Co-located in the same directory as this script.
+#                     Requires curl and jq. Reads crestron/creds/username
+#                     and crestron/creds/password from pass itself when
+#                     credentials aren't overridden, so no credential
+#                     handling is needed here.
 check_hdps_web() {
-  if [[ -z "$HDPS_WEB_URL" ]]; then
-    vecho "${YELLOW}HDPS_WEB_URL not configured — skipping HDPS web check.${NC}"
+  local hdps_script
+  hdps_script="$(resolve_script hdps_status)" || {
+    warn "hdps_status.sh (or hdps_status) not found or not executable in ${SCRIPT_DIR} — skipping HD-PS status check"
     return
-  fi
-  if ! command -v curl &>/dev/null; then
-    warn "curl not in PATH — skipping HDPS web check"
-    return
-  fi
-  local i label url
+  }
+
+  # Match this script's own color decision (colors disabled -> NC is empty),
+  # since hdps_status.sh's stdout is captured below and can't see the TTY.
+  local hdps_color="never"
+  [[ -n "$NC" ]] && hdps_color="always"
+
+  local i label output rc first=true
   for (( i=0; i<${#DEVICE_LABELS[@]}; i++ )); do
     label="${DEVICE_LABELS[i]^^}"
     [[ "$label" == HDPS* ]] || continue
-    info ""
-    info "${BOLD}${DEVICE_LABELS[i]} signal status:${NC}"
-    # shellcheck disable=SC2059
-    url=$(printf "$HDPS_WEB_URL" "${DEVICE_IPS[i]}")
-    # TODO: adjust parsing once the actual page/API format is known.
-    curl -fsSk "$url" 2>/dev/null || warn "HDPS web check failed (${url})"
+
+    $first || info ""
+    first=false
+    info "${BOLD}${DEVICE_LABELS[i]} status:${NC}"
+
+    set +e
+    output=$(timeout "$HDPS_TIMEOUT" "$hdps_script" --color "$hdps_color" "${DEVICE_IPS[i]}" 2>&1)
+    rc=$?
+    set -e
+
+    case $rc in
+      0)
+        while IFS= read -r line; do info "  ${line}"; done <<< "$output"
+        ;;
+      77)
+        warn "HD-PS status check misconfigured (missing credentials — check pass entries crestron/creds/username, crestron/creds/password)"
+        ;;
+      124)
+        warn "HD-PS status check timed out after ${HDPS_TIMEOUT}s"
+        ;;
+      *)
+        warn "HD-PS status check failed (exit ${rc})"
+        vecho "$output"
+        ;;
+    esac
   done
 }
 
-# --diag: reachability probe + iptable check (SSH-reachable panel/HDPS only)
-# + VC-4/HDPS-web status if configured. Read-only; no connection opened.
+# --diag: reachability probe + iptable check (SSH-reachable panel/DMPS/HDPS
+# only) + VC-4 status + HD-PS routing/signal/mute status snapshot. The VC-4
+# and HD-PS sections are skipped entirely when the room has no HDPS device
+# (VC-4 lookups return nothing useful, and there's no HD-PS endpoint to hit).
+# Read-only; no connection opened.
 show_diagnostics() {
   local count=${#DEVICE_IPS[@]}
   if [[ $count -eq 0 ]]; then
@@ -880,20 +961,38 @@ show_diagnostics() {
   done
 
   info ""
+  divider
   info "${CYAN}Running '${DIAG_CMD}' on reachable panel/HDPS devices...${NC}"
   probe_iptables
 
+  local condensed
   for (( i=0; i<count; i++ )); do
     [[ -z "${DIAG_OUTPUTS[i]}" ]] && continue
     info ""
     info "${BOLD}${DEVICE_LABELS[i]} (${DEVICE_IPS[i]}) — ${DIAG_CMD}:${NC}"
+    condensed="$(condense_iptable <<< "${DIAG_OUTPUTS[i]}")"
     while IFS= read -r line; do
       info "  ${line}"
-    done <<< "${DIAG_OUTPUTS[i]}"
+    done <<< "${condensed:-${DIAG_OUTPUTS[i]}}"
   done
 
-  check_vc4_status
-  check_hdps_web
+  local has_hdps=false label
+  for (( i=0; i<count; i++ )); do
+    label="${DEVICE_LABELS[i]^^}"
+    [[ "$label" == HDPS* ]] && { has_hdps=true; break; }
+  done
+
+  if $has_hdps; then
+    info ""
+    divider
+    check_vc4_status
+
+    info ""
+    divider
+    check_hdps_web
+  else
+    vecho "${CYAN}No HDPS device in ${ROOM_CODE} — skipping VC-4 and HD-PS status checks.${NC}"
+  fi
 
   log "DIAG room=${ROOM_CODE} devices=${count}"
 }

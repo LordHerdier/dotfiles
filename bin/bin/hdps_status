@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+#
+# hdps_status.sh — Read-only Crestron HD-PS triage snapshot.
+#
+# Logs into the HD-PS web session (cookie + XSRF, same flow as
+# hdps_sendpayload.sh) and GETs /Device/AvMatrixRoutingV2, /Device/AvioV2,
+# and /Device/AnalogAudioInputs, then prints a trimmed "what's the user
+# seeing right now" status block: routing, per-input signal/HDCP state,
+# per-output sink/transmit/HDCP-disabled state, and mute status. No
+# networking, cert, join, or config data — just live signal state.
+#
+# Usage:
+#   hdps_status.sh [--insecure|--verify] [--color auto|always|never]
+#                  [--user U] [--password P] <host-or-ip>
+#
+# Credentials: pass entries crestron/creds/username, crestron/creds/password
+# (same convention as hdps_sendpayload.sh / crestronCmd.sh / hdps_bootstrap.sh),
+# or --user/--password, or HDPS_USER/HDPS_PASS env.
+#
+# Output is a fixed-width table (fits 80 cols with the 2-space indent
+# classroom.sh's --diag adds), one row per input/output/audio channel.
+# Fields showing "-" mean "nothing to flag" (unmuted, not HDCP-blocked,
+# etc.) — only the states worth noticing get a value and a color.
+#
+# Exit codes:
+#   0   OK
+#   1   Device reachable but login or a GET failed
+#   2   Usage error
+#   77  Credential retrieval failure
+
+set -euo pipefail
+
+die() { echo "ERROR: $*" >&2; exit "${2:-1}"; }
+
+command -v curl >/dev/null || { echo "ERROR: curl not installed" >&2; exit 2; }
+command -v jq   >/dev/null || { echo "ERROR: jq not installed" >&2; exit 2; }
+
+TLS_INSECURE=1   # HD-PS devices commonly run self-signed certs
+USER_ARG="${HDPS_USER:-}"
+PASS_ARG="${HDPS_PASS:-}"
+PASS_PATH="${PASS_PATH:-crestron/creds}"
+COLOR_MODE="auto"   # auto | always | never
+HOST=""
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [--insecure|--verify] [--color auto|always|never]
+                 [--user U] [--password P] <host-or-ip>
+
+  --insecure       Disable TLS verification (default)
+  --verify         Enable TLS verification
+  --color <mode>   auto (default, colors if stdout is a TTY), always, never
+  --user, --password
+                   Override credentials (default: pass ${PASS_PATH}/username,
+                   ${PASS_PATH}/password, or HDPS_USER/HDPS_PASS env)
+  --pass-path <p>  Override pass prefix (default: ${PASS_PATH})
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --insecure)   TLS_INSECURE=1; shift ;;
+    --verify)     TLS_INSECURE=0; shift ;;
+    --color)      shift; COLOR_MODE="${1:-}"; shift ;;
+    --user)       shift; USER_ARG="${1:-}"; shift ;;
+    --password)   shift; PASS_ARG="${1:-}"; shift ;;
+    --pass-path)  shift; PASS_PATH="${1:-}"; shift ;;
+    -h|--help)    usage; exit 0 ;;
+    -*)           die "unknown option: $1" 2 ;;
+    *)            [[ -z "$HOST" ]] || die "unexpected argument: $1" 2; HOST="$1"; shift ;;
+  esac
+done
+
+[[ -n "$HOST" ]] || { usage >&2; exit 2; }
+
+case "$COLOR_MODE" in
+  always) use_color=true ;;
+  never)  use_color=false ;;
+  auto)   [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]] && use_color=true || use_color=false ;;
+  *)      die "--color must be auto, always, or never" 2 ;;
+esac
+
+resolve_creds() {
+  if [[ -n "$USER_ARG" || -n "$PASS_ARG" ]]; then
+    [[ -n "$USER_ARG" && -n "$PASS_ARG" ]] || die "both --user/--password (or HDPS_USER/HDPS_PASS) must be set" 2
+    printf '%s\n%s\n' "$USER_ARG" "$PASS_ARG"
+    return
+  fi
+  command -v pass >/dev/null || die "no credentials given and 'pass' not installed" 77
+  local u p
+  u="$(pass show "$PASS_PATH/username" 2>/dev/null | head -n1)" || die "missing username in pass: $PASS_PATH/username" 77
+  p="$(pass show "$PASS_PATH/password" 2>/dev/null | head -n1)" || die "missing password in pass: $PASS_PATH/password" 77
+  printf '%s\n%s\n' "$u" "$p"
+}
+
+base="https://$HOST"
+run_dir="$(mktemp -d)"
+trap 'rm -rf "$run_dir"' EXIT
+
+cj="$run_dir/cookies.txt"
+hdrs="$run_dir/headers.txt"
+
+curl_args=(-sS --connect-timeout 5 --max-time 10 --retry 2 --retry-delay 1 --retry-connrefused)
+(( TLS_INSECURE )) && curl_args+=(-k)
+
+mapfile -t creds < <(resolve_creds)
+user="${creds[0]}" passwd="${creds[1]}"
+
+curl "${curl_args[@]}" "$base/userlogin.html" -o /dev/null || die "device unreachable: $HOST"
+curl "${curl_args[@]}" -c "$cj" "$base/userlogin.html" -o /dev/null
+
+curl "${curl_args[@]}" -b "$cj" -c "$cj" -D "$hdrs" -o /dev/null \
+  -H "Origin: $base" \
+  -H "Referer: $base/userlogin.html" \
+  --data-urlencode "login=$user" \
+  --data-urlencode "passwd=$passwd" \
+  "$base/userlogin.html"
+
+xsrf="$(awk -F': *' 'BEGIN{IGNORECASE=1} $1=="CREST-XSRF-TOKEN"{print $2}' "$hdrs" | tr -d '\r' | tail -n1)"
+[[ -n "$xsrf" ]] || die "login failed (no XSRF token — check credentials)"
+
+get_endpoint() {
+  local path="$1" out="$2" code
+  code="$(curl "${curl_args[@]}" -b "$cj" -H "Accept: application/json" \
+    -o "$out" -w '%{http_code}' "$base$path")"
+  [[ "$code" == "200" ]] || die "GET $path failed HTTP $code"
+}
+
+routing_json="$run_dir/routing.json"
+avio_json="$run_dir/avio.json"
+audio_json="$run_dir/audio.json"
+
+get_endpoint /Device/AvMatrixRoutingV2 "$routing_json"
+get_endpoint /Device/AvioV2 "$avio_json"
+get_endpoint /Device/AnalogAudioInputs "$audio_json"
+
+jq -n --slurpfile r "$routing_json" --slurpfile a "$avio_json" --slurpfile au "$audio_json" \
+      --argjson color "$use_color" -r '
+  # --- color-safe fixed-width helpers ---
+  # colpad pads to width n based on the *plain* text, then wraps the visible
+  # text in color codes — the trailing padding spaces are untouched, so
+  # columns stay aligned whether or not color is on.
+  def ESC: "[";
+  def RESET: ESC + "0m";
+  # Always adds at least one space, even when s is already >= width n, so
+  # columns never collide when a value (e.g. "Output1") overflows its width.
+  def padr(s; n): (s + (" " * ([n - (s|length), 1] | max)));
+  def colpad(s; n; code):
+    (s|tostring) as $s
+    | padr($s; n) as $p
+    | if $color and code != "" then
+        (ESC + code + "m" + $s + RESET + $p[($s|length):])
+      else
+        $p
+      end;
+  # last-column variant: color but no trailing pad needed
+  def col(s; code):
+    (s|tostring) as $s
+    | if $color and code != "" then (ESC + code + "m" + $s + RESET) else $s end;
+  def bold(s): col(s; "1");
+
+  ($r[0].Device.AvMatrixRoutingV2.Routes // {}) as $routes
+  | ($a[0].Device.AvioV2.Inputs // {}) as $inputs
+  | ($a[0].Device.AvioV2.Outputs // {}) as $outputs
+  | ($au[0].Device.AnalogAudioInputs.Inputs // {}) as $ains
+
+  | bold("Routing:"),
+    ( $routes | to_entries[] |
+      "  \(.key) <- \(.value.VideoSource // "?")" +
+      (if .value.VideoSource != .value.AudioSource then " (audio: \(.value.AudioSource // "?"))" else "" end) ),
+    "",
+    bold("Inputs:"),
+    ( $inputs | to_entries[] | .key as $k | .value as $v |
+      (($v.InputInfo.Ports.Port1) // {}) as $p |
+      ($p.IsSourceDetected // false) as $src |
+      ($p.IsSyncDetected // false) as $sync |
+      (if $src then ["SRC","32"] elif $sync then ["SYNC","33"] else ["none","2"] end) as $sig |
+      "  " + colpad($k; 8; "") + colpad((if ($v.UserSpecifiedName // "") == "" then "-" else $v.UserSpecifiedName end); 11; "") +
+      colpad($sig[0]; 6; $sig[1]) +
+      colpad($p.Digital.HdcpState // "?"; 17; "") +
+      col($p.CurrentResolution // "?"; "") ),
+    "",
+    bold("Outputs:"),
+    ( $outputs | to_entries[] | .key as $k | .value as $v |
+      (($v.OutputInfo.Ports.Port1) // {}) as $p |
+      ($p.PortType // "?") as $ptype |
+      if $ptype == "Audio" then
+        ($p.Audio.Mute // false) as $muted |
+        "  " + colpad($k; 8; "") + colpad((if ($v.UserSpecifiedName // "") == "" then "-" else $v.UserSpecifiedName end); 11; "") +
+        colpad("vol=\($p.Audio.Volume // 0)"; 8; "") +
+        col((if $muted then "MUTED" else "-" end); (if $muted then "33" else "" end))
+      else
+        ($p.IsSinkConnected // false) as $sink |
+        ($p.Digital.IsTransmitting // false) as $tx |
+        ($p.Digital.DisabledByHdcp // false) as $hdcpblk |
+        ($v.OutputInfo.Audio.Mute // false) as $muted |
+        (if $tx then ["LIVE","32"] elif $sink then ["idle","33"] else ["no sink","2"] end) as $txs |
+        "  " + colpad($k; 8; "") + colpad((if ($v.UserSpecifiedName // "") == "" then "-" else $v.UserSpecifiedName end); 11; "") +
+        colpad($p.CurrentResolution // "n/a"; 14; "") +
+        colpad($txs[0]; 9; $txs[1]) +
+        colpad((if $hdcpblk then "HDCP-BLK" else "-" end); 10; (if $hdcpblk then "1;31" else "" end)) +
+        col((if $muted then "MUTED" else "-" end); (if $muted then "33" else "" end))
+      end ),
+    "",
+    bold("Audio inputs:"),
+    ( $ains | to_entries[] | .key as $k | .value as $v |
+      ($v.IsMuted // false) as $muted |
+      ($v.IsClipped // false) as $clipped |
+      "  " + colpad($k; 4; "") + colpad((if ($v.Name // "") == "" then "-" else $v.Name end); 13; "") +
+      colpad((if $muted then "MUTED" else "-" end); 7; (if $muted then "33" else "" end)) +
+      col((if $clipped then "CLIP" else "-" end); (if $clipped then "1;31" else "" end)) )
+'
