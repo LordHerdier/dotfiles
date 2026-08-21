@@ -15,8 +15,8 @@
 #
 # USAGE:
 #   classroom.sh [-v|--verbose] [-h|--help] [--no-ems] [--refresh] [--info]
-#                [--log] [--device <type>] [--method <method>] <room_code>
-#                [-- <command> [args...]]
+#                [--diag] [--log] [--device <type>] [--method <method>]
+#                <room_code> [-- <command> [args...]]
 #
 #   <room_code>
 #       Room code to connect to (e.g. "FH0111", "AH1301"). Case-insensitive.
@@ -39,6 +39,12 @@
 #   --info
 #       Print the room's devices and their reachability, then exit without
 #       connecting. A read-only triage view.
+#
+#   --diag
+#       Like --info, plus: runs DIAG_CMD over SSH on devices matching
+#       DIAG_SSH_TYPES (default: panel/HDPS), a VC-4 status lookup via
+#       room_status.sh, and an HDPS web signal-status check if HDPS_WEB_URL
+#       is configured. Read-only; exits without connecting.
 #
 #   --log
 #       Open the activity log (LOG_FILE) in $VISUAL/$EDITOR (falls back to vi)
@@ -63,17 +69,22 @@
 #   classroom.sh --no-ems AH1301         # Skip EMS check
 #   classroom.sh --refresh FH0111        # Refresh export, then connect
 #   classroom.sh --info FH0111           # Show devices + reachability, no connect
+#   classroom.sh --diag FH0111           # Reachability + iptable + VC-4 status, no connect
 #   classroom.sh --device dmps FH0111    # Skip the prompt, connect to the DMPS
 #   classroom.sh FH0111 -- ver           # Run 'ver' on the selected device
 #   classroom.sh --method telnet PH0302  # Force telnet connection
 #
 # DEPENDENCIES:
-#   ems.sh       — Co-located in the same directory as this script.
-#   connect.sh   — Co-located in the same directory as this script.
-#   efficient    — Only required when --refresh is used. Must be in PATH.
-#                  Run: efficient vlan show SmartClassroom --no-pager
-#   panelviewer  — Optional. Must be in PATH. When present, offered as an
-#                  alternative to SSH for PANEL/TSW750 devices.
+#   ems.sh         — Co-located in the same directory as this script.
+#   connect.sh     — Co-located in the same directory as this script.
+#   efficient      — Only required when --refresh is used. Must be in PATH.
+#                    Run: efficient vlan show SmartClassroom --no-pager
+#   panelviewer    — Optional. Must be in PATH. When present, offered as an
+#                    alternative to SSH for PANEL/TSW750 devices.
+#   room_status.sh — Co-located in the same directory. Used by --diag for the
+#                    VC-4 status lookup. Requires curl and jq; reads
+#                    crestron/vc4/host, work/username, and work/password from
+#                    pass when not overridden.
 #
 # CONFIGURATION:
 #   Settings are read from a sourced shell config file (KEY="value" lines):
@@ -89,11 +100,17 @@
 #     PROBE_TIMEOUT     Per-probe timeout in seconds for TCP/ICMP checks (1)
 #     PANEL_LABELS      Space-separated device labels offered PanelViewer (PANEL TSW750)
 #     PROJECTOR_PREFIX  Label prefix treated as a web-only projector (PROJ)
+#     DIAG_SSH_TYPES    Device label prefixes --diag runs DIAG_CMD against (PANEL TSW750 HDPS)
+#     DIAG_CMD          Command run on each matched device by --diag (iptable -T)
+#     DIAG_TIMEOUT      Per-device timeout in seconds for DIAG_CMD (15)
+#     VC4_TIMEOUT       Timeout in seconds for the --diag VC-4 status lookup (35)
+#     HDPS_WEB_URL      printf template for the HDPS signal-status URL; %s is
+#                       the device IP. Unset skips the --diag HDPS web check.
 #     LOG_FILE          Path to the activity log (see LOGGING)
 #
 # LOGGING:
-#   Each EMS check, device lookup, export refresh, and connection handoff is
-#   appended as a timestamped line to LOG_FILE, which defaults to
+#   Each EMS check, device lookup, export refresh, --diag run, and connection
+#   handoff is appended as a timestamped line to LOG_FILE, which defaults to
 #     ${XDG_STATE_HOME:-~/.local/state}/classroom/classroom.log
 #   Logging is best-effort: a failure to write never aborts the run.
 #
@@ -148,6 +165,7 @@ NO_EMS=false
 REFRESH=false
 INFO=false
 OPEN_LOG=false
+DIAG=false
 METHOD=""
 DEVICE_FILTER=""
 ROOM_CODE=""
@@ -165,6 +183,11 @@ PROBE_TIMEOUT=""
 PANEL_LABELS=""
 PROJECTOR_PREFIX=""
 LOG_FILE=""
+DIAG_SSH_TYPES=""
+DIAG_CMD=""
+DIAG_TIMEOUT=""
+VC4_TIMEOUT=""
+HDPS_WEB_URL=""
 
 # Set in check_deps: whether TCP port probing is available (needs `timeout`).
 PORT_PROBE=false
@@ -173,6 +196,7 @@ EXPORT_FILE=""
 DEVICE_IPS=()
 DEVICE_LABELS=()
 DEVICE_STATUSES=()
+DIAG_OUTPUTS=()
 SELECTED_IP=""
 SELECTED_LABEL=""
 MULTI=false
@@ -217,6 +241,25 @@ create_default_config() {
 # Label prefix treated as a web-only projector (opened in a browser).
 #PROJECTOR_PREFIX="PROJ"
 
+# Device label prefixes that --diag runs DIAG_CMD against over SSH.
+#DIAG_SSH_TYPES="PANEL TSW750 HDPS"
+
+# Command to run on each matched device (read-only status query).
+# "-T" renders the Crestron IP table in tabular form.
+#DIAG_CMD="iptable -T"
+
+# Per-device timeout (seconds) for the diagnostic command.
+#DIAG_TIMEOUT=15
+
+# Timeout (seconds) for the VC-4 status lookup. Kept separate from
+# DIAG_TIMEOUT since room_status.sh's own curl call uses --max-time 30
+# internally — this should stay comfortably above that.
+#VC4_TIMEOUT=35
+
+# printf template for the HDPS signal-status URL — %s is replaced with the
+# device IP. Leave unset to skip the HDPS web check.
+#HDPS_WEB_URL="http://%s/signal-status"
+
 # Activity log location. Defaults under $XDG_STATE_HOME (~/.local/state).
 #LOG_FILE="$HOME/.local/state/classroom/classroom.log"
 EOF
@@ -247,6 +290,11 @@ load_config() {
   PANEL_LABELS="${PANEL_LABELS:-PANEL TSW750}"
   PROJECTOR_PREFIX="${PROJECTOR_PREFIX:-PROJ}"
   LOG_FILE="${LOG_FILE:-${XDG_STATE_HOME:-${HOME}/.local/state}/classroom/classroom.log}"
+  DIAG_SSH_TYPES="${DIAG_SSH_TYPES:-PANEL TSW750 HDPS}"
+  DIAG_CMD="${DIAG_CMD:-iptable -T}"
+  DIAG_TIMEOUT="${DIAG_TIMEOUT:-15}"
+  VC4_TIMEOUT="${VC4_TIMEOUT:-35}"
+  HDPS_WEB_URL="${HDPS_WEB_URL:-}"
 
   # Prepare the log directory once; failures degrade to a no-op in log().
   mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
@@ -287,6 +335,7 @@ Options:
   --no-ems               Skip EMS availability check
   --refresh              Refresh SmartClassroom export via efficient before searching
   --info                 Show devices + reachability for the room, then exit (no connect)
+  --diag                 Reachability + iptable check on panel/HDPS + VC-4/HDPS status, then exit
   --log                  Open the activity log in \$VISUAL/\$EDITOR and exit (no room code)
   --device <type>        Auto-select the device whose type matches (e.g. dmps, panel);
                          skips the selection prompt. Falls back to the menu if ambiguous.
@@ -317,6 +366,7 @@ parse_args() {
       --no-ems)     NO_EMS=true; shift ;;
       --refresh)    REFRESH=true; shift ;;
       --info)       INFO=true; shift ;;
+      --diag)       DIAG=true; shift ;;
       --log|--logs) OPEN_LOG=true; shift ;;
       --device)
         shift
@@ -685,6 +735,169 @@ show_info() {
   done
 }
 
+# --- QUICK DIAGNOSTICS ---
+
+# Strips the trailing device-prompt line (e.g. "TSW-770>") and any blank
+# lines at the start/end of raw command output, so it prints tightly like
+# the other status sections.
+clean_diag_output() {
+  local text="$1"
+  text=$(sed -E '/^[A-Za-z0-9_.-]+>[[:space:]]*$/d' <<< "$text")
+  text=$(sed -e '/./,$!d' <<< "$text")
+  text=$(tac <<< "$text" | sed -e '/./,$!d' | tac)
+  printf '%s' "$text"
+}
+
+# Runs DIAG_CMD (default 'iptable -T') on each SSH-reachable device whose
+# label matches DIAG_SSH_TYPES, in parallel. Populates DIAG_OUTPUTS in
+# DEVICE_IPS order (empty string for devices that were skipped).
+probe_iptables() {
+  DIAG_OUTPUTS=()
+  local tmpfiles=() pids=() i t label matches
+  local -a diag_cmd
+  read -ra diag_cmd <<< "$DIAG_CMD"
+
+  for (( i=0; i<${#DEVICE_IPS[@]}; i++ )); do
+    label="${DEVICE_LABELS[i]^^}"
+    matches=false
+    for t in $DIAG_SSH_TYPES; do
+      [[ "$label" == "${t^^}"* ]] && { matches=true; break; }
+    done
+
+    if [[ "${DEVICE_STATUSES[i]}" != "SSH" || "$matches" != true ]]; then
+      tmpfiles+=("")
+      pids+=("")
+      continue
+    fi
+
+    local f
+    f=$(mktemp)
+    tmpfiles+=("$f")
+    (
+      timeout "$DIAG_TIMEOUT" "$CONNECT_SCRIPT" "${DEVICE_IPS[i]}" -- "${diag_cmd[@]}" \
+        > "$f" 2>&1 || echo "[diag] command failed or timed out" >> "$f"
+    ) &
+    pids+=("$!")
+  done
+
+  for pid in "${pids[@]}"; do
+    [[ -n "$pid" ]] && wait "$pid" 2>/dev/null
+  done
+
+  for f in "${tmpfiles[@]}"; do
+    if [[ -n "$f" ]]; then
+      DIAG_OUTPUTS+=("$(clean_diag_output "$(cat "$f")")")
+      rm -f "$f"
+    else
+      DIAG_OUTPUTS+=("")
+    fi
+  done
+}
+
+# --- VC-4 STATUS ---
+# DEPENDENCIES:
+#   room_status.sh  — Co-located in the same directory as this script.
+#                      Requires curl and jq. Reads crestron/vc4/host,
+#                      work/username, and work/password from pass itself
+#                      when --server/--web-user/--web-pass aren't passed,
+#                      so no credential handling is needed here.
+check_vc4_status() {
+  local vc4_script
+  if [[ -x "${SCRIPT_DIR}/room_status.sh" ]]; then
+    vc4_script="${SCRIPT_DIR}/room_status.sh"
+  else
+    warn "room_status.sh not found or not executable in ${SCRIPT_DIR} — skipping VC-4 check"
+    return
+  fi
+
+  info ""
+  info "${BOLD}VC-4 status:${NC}"
+
+  local output rc
+  set +e
+  output=$(timeout "$VC4_TIMEOUT" "$vc4_script" "$ROOM_CODE" 2>&1)
+  rc=$?
+  set -e
+
+  case $rc in
+    0)
+      while IFS= read -r line; do info "  ${line}"; done <<< "$output"
+      ;;
+    1)
+      warn "VC-4: no devices found for room '${ROOM_CODE}'"
+      ;;
+    2)
+      warn "VC-4 check misconfigured (missing server/credentials — check pass entries crestron/vc4/host, work/username, work/password)"
+      ;;
+    124)
+      warn "VC-4 status check timed out after ${VC4_TIMEOUT}s"
+      ;;
+    *)
+      warn "VC-4 status check failed (exit ${rc})"
+      vecho "$output"
+      ;;
+  esac
+}
+
+# Placeholder — fill in once the HDPS signal-status page/API is known.
+check_hdps_web() {
+  if [[ -z "$HDPS_WEB_URL" ]]; then
+    vecho "${YELLOW}HDPS_WEB_URL not configured — skipping HDPS web check.${NC}"
+    return
+  fi
+  if ! command -v curl &>/dev/null; then
+    warn "curl not in PATH — skipping HDPS web check"
+    return
+  fi
+  local i label url
+  for (( i=0; i<${#DEVICE_LABELS[@]}; i++ )); do
+    label="${DEVICE_LABELS[i]^^}"
+    [[ "$label" == HDPS* ]] || continue
+    info ""
+    info "${BOLD}${DEVICE_LABELS[i]} signal status:${NC}"
+    # shellcheck disable=SC2059
+    url=$(printf "$HDPS_WEB_URL" "${DEVICE_IPS[i]}")
+    # TODO: adjust parsing once the actual page/API format is known.
+    curl -fsSk "$url" 2>/dev/null || warn "HDPS web check failed (${url})"
+  done
+}
+
+# --diag: reachability probe + iptable check (SSH-reachable panel/HDPS only)
+# + VC-4/HDPS-web status if configured. Read-only; no connection opened.
+show_diagnostics() {
+  local count=${#DEVICE_IPS[@]}
+  if [[ $count -eq 0 ]]; then
+    warn "No devices found for '${ROOM_CODE}' in $(basename "$EXPORT_FILE")"
+    return
+  fi
+
+  probe_devices
+  info ""
+  info "${BOLD}${count} device(s) for ${ROOM_CODE}:${NC}"
+  local i
+  for (( i=0; i<count; i++ )); do
+    print_device_row "$i" "  "
+  done
+
+  info ""
+  info "${CYAN}Running '${DIAG_CMD}' on reachable panel/HDPS devices...${NC}"
+  probe_iptables
+
+  for (( i=0; i<count; i++ )); do
+    [[ -z "${DIAG_OUTPUTS[i]}" ]] && continue
+    info ""
+    info "${BOLD}${DEVICE_LABELS[i]} (${DEVICE_IPS[i]}) — ${DIAG_CMD}:${NC}"
+    while IFS= read -r line; do
+      info "  ${line}"
+    done <<< "${DIAG_OUTPUTS[i]}"
+  done
+
+  check_vc4_status
+  check_hdps_web
+
+  log "DIAG room=${ROOM_CODE} devices=${count}"
+}
+
 select_device() {
   local count=${#DEVICE_IPS[@]}
 
@@ -981,6 +1194,11 @@ main() {
 
   if $INFO; then
     show_info
+    exit 0
+  fi
+
+  if $DIAG; then
+    show_diagnostics
     exit 0
   fi
 
