@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# switch-vm.sh — swap between two Proxmox VMs that share PCIe passthrough devices.
+# Usage: ./switch-vm.sh <name|vmid>     e.g. ./switch-vm.sh Nico | ./switch-vm.sh apthos | ./switch-vm.sh 110
+#
+# Runs qm locally if executed on the Proxmox host, otherwise over SSH to $PVE_HOST.
+set -euo pipefail
+
+PVE_HOST="${PVE_HOST:-root@192.168.50.116}"
+VM_PAIR=(100 110)                           # Nico, apthos
+SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT:-180}" # seconds before a forced stop
+RELEASE_DELAY="${RELEASE_DELAY:-3}"         # pause to let PCIe devices release
+
+if command -v qm >/dev/null 2>&1; then
+    pve() { "$@"; }
+else
+    pve() { ssh -o BatchMode=yes -o ConnectTimeout=5 "$PVE_HOST" -- "$@"; }
+fi
+
+log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+die()  { log "ERROR: $*" >&2; exit 1; }
+
+[[ $# -eq 1 ]] || { echo "Usage: $0 <name|vmid>"; exit 1; }
+arg="${1,,}"
+
+# Resolve names -> VMIDs from a single qm list call
+declare -A NAME
+while read -r id name _; do
+    [[ "$id" =~ ^[0-9]+$ ]] && NAME[$id]="$name"
+done < <(pve qm list)
+
+target="" other=""
+for id in "${VM_PAIR[@]}"; do
+    [[ -n "${NAME[$id]:-}" ]] || die "VM $id not found on host"
+    if [[ "$arg" == "$id" || "$arg" == "${NAME[$id],,}" ]]; then
+        target=$id
+    else
+        other=$id
+    fi
+done
+[[ -n "$target" ]] || die "'$1' is not one of: $(for id in "${VM_PAIR[@]}"; do printf '%s(%s) ' "${NAME[$id]}" "$id"; done)"
+
+status() { pve qm status "$1" | awk '{print $2}'; }
+
+t_name="${NAME[$target]}"; o_name="${NAME[$other]}"
+
+if [[ "$(status "$target")" == "running" ]]; then
+    log "$t_name ($target) is already running — nothing to do."
+    exit 0
+fi
+
+if [[ "$(status "$other")" != "stopped" ]]; then
+    log "Shutting down $o_name ($other) (timeout ${SHUTDOWN_TIMEOUT}s, then force stop)..."
+    pve qm shutdown "$other" --timeout "$SHUTDOWN_TIMEOUT" --forceStop 1 || true
+
+    # Belt and braces: make sure it's really down before touching the PCIe devices
+    for _ in $(seq 1 30); do
+        [[ "$(status "$other")" == "stopped" ]] && break
+        sleep 2
+    done
+    [[ "$(status "$other")" == "stopped" ]] || die "$o_name ($other) did not stop; refusing to start $t_name"
+    log "$o_name stopped."
+    sleep "$RELEASE_DELAY"
+fi
+
+log "Starting $t_name ($target)..."
+pve qm start "$target"
+log "$t_name is $(status "$target")."
