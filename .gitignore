@@ -14,3 +14,6 @@ efficient.log
 .env
 **/.env
 *.eln
+
+# local-only audit note (contains internal infra detail; not for the public repo)
+AUDIT.md
