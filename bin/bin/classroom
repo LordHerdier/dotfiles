@@ -91,6 +91,11 @@
 #   resolve_script().
 #   ems.sh         — Co-located in the same directory as this script.
 #   connect.sh     — Co-located in the same directory as this script.
+#   probe.sh       — Co-located in the same directory. Provides the
+#                    reachability status shown by --info/--diag and the
+#                    device picker. Shared with connect.sh, crestronCmd.sh,
+#                    audit_network_auth.sh and getProjects.sh so every script
+#                    here agrees on what "reachable" means.
 #   efficient      — Only required when --refresh is used. Must be in PATH.
 #                    Run: efficient vlan show SmartClassroom --no-pager
 #   panelviewer    — Optional. Must be in PATH. When present, offered as an
@@ -99,6 +104,9 @@
 #                    VC-4 status lookup. Requires curl and jq; reads
 #                    crestron/vc4/host, work/username, and work/password from
 #                    pass when not overridden.
+#   iptable_fmt.sh — Co-located in the same directory. Used by --diag to clean
+#                    and condense each device's DIAG_CMD output. Optional:
+#                    without it the raw device output is shown.
 #   hdps_status.sh — Co-located in the same directory. Used by --diag for the
 #                    HD-PS routing/signal/mute status snapshot. Requires curl
 #                    and jq; reads crestron/creds/username and
@@ -166,12 +174,15 @@ else
 fi
 
 vecho() { $VERBOSE && echo -e "$@" >&2 || true; }
-info()  { echo -e "$@" >&2; }
-warn()  { echo -e "${YELLOW}Warning: $*${NC}" >&2; }
-die()   {
+info() { echo -e "$@" >&2; }
+warn() { echo -e "${YELLOW}Warning: $*${NC}" >&2; }
+die() {
   # Optional leading numeric argument sets the exit code (defaults to 1).
   local code=1
-  [[ "${1:-}" =~ ^[0-9]+$ ]] && { code="$1"; shift; }
+  [[ "${1:-}" =~ ^[0-9]+$ ]] && {
+    code="$1"
+    shift
+  }
   echo -e "${RED}Error: $*${NC}" >&2
   exit "$code"
 }
@@ -208,8 +219,6 @@ DIAG_TIMEOUT=""
 VC4_TIMEOUT=""
 HDPS_TIMEOUT=""
 
-# Set in check_deps: whether TCP port probing is available (needs `timeout`).
-PORT_PROBE=false
 
 EXPORT_FILE=""
 DEVICE_IPS=()
@@ -224,6 +233,7 @@ SELECTED_LABELS=()
 
 EMS_SCRIPT=""
 CONNECT_SCRIPT=""
+PROBE_SCRIPT=""
 
 # --- CONFIG & LOGGING ---
 
@@ -232,9 +242,12 @@ CONNECT_SCRIPT=""
 create_default_config() {
   local cfg="$1" dir
   dir="$(dirname "$cfg")"
-  mkdir -p "$dir" 2>/dev/null || { warn "Could not create config dir ${dir} — using defaults"; return; }
+  mkdir -p "$dir" 2>/dev/null || {
+    warn "Could not create config dir ${dir} — using defaults"
+    return
+  }
 
-  cat > "$cfg" 2>/dev/null <<'EOF' || { warn "Could not write ${cfg} — using defaults"; return; }
+  cat >"$cfg" 2>/dev/null <<'EOF' || {
 # classroom.sh configuration — sourced as shell, so use KEY="value" syntax.
 # Every setting below is shown with its built-in default; uncomment to change.
 
@@ -283,6 +296,9 @@ create_default_config() {
 # Activity log location. Defaults under $XDG_STATE_HOME (~/.local/state).
 #LOG_FILE="$HOME/.local/state/classroom/classroom.log"
 EOF
+    warn "Could not write ${cfg} — using defaults"
+    return
+  }
 
   info "${CYAN}Wrote default config → ${cfg}${NC}"
 }
@@ -325,7 +341,7 @@ load_config() {
 log() {
   local ts
   ts="$(date +%FT%T)"
-  printf '%s %s\n' "$ts" "$*" >> "$LOG_FILE" 2>/dev/null || true
+  printf '%s %s\n' "$ts" "$*" >>"$LOG_FILE" 2>/dev/null || true
 }
 
 # --log: open the activity log in the user's editor and exit. Unquoted "$editor"
@@ -382,40 +398,71 @@ EOF
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -v|--verbose) VERBOSE=true; shift ;;
-      -h|--help)    print_help; exit 0 ;;
-      --version)    echo "classroom.sh $VERSION"; exit 0 ;;
-      --no-ems)     NO_EMS=true; shift ;;
-      --require-free) REQUIRE_FREE=true; shift ;;
-      --refresh)    REFRESH=true; shift ;;
-      --info)       INFO=true; shift ;;
-      --diag)       DIAG=true; shift ;;
-      --log|--logs) OPEN_LOG=true; shift ;;
-      --device)
+    -v | --verbose)
+      VERBOSE=true
+      shift
+      ;;
+    -h | --help)
+      print_help
+      exit 0
+      ;;
+    --version)
+      echo "classroom.sh $VERSION"
+      exit 0
+      ;;
+    --no-ems)
+      NO_EMS=true
+      shift
+      ;;
+    --require-free)
+      REQUIRE_FREE=true
+      shift
+      ;;
+    --refresh)
+      REFRESH=true
+      shift
+      ;;
+    --info)
+      INFO=true
+      shift
+      ;;
+    --diag)
+      DIAG=true
+      shift
+      ;;
+    --log | --logs)
+      OPEN_LOG=true
+      shift
+      ;;
+    --device)
+      shift
+      [[ $# -gt 0 ]] || die 64 "--device requires an argument (e.g. dmps, panel, hdps)"
+      DEVICE_FILTER="$1"
+      shift
+      ;;
+    --method)
+      shift
+      [[ $# -gt 0 ]] || die 64 "--method requires an argument (admin|crestron|telnet)"
+      case "$1" in
+      admin | crestron | telnet) METHOD="$1" ;;
+      *) die 64 "Unknown method '$1' — use admin, crestron, or telnet" ;;
+      esac
+      shift
+      ;;
+    --)
+      shift
+      REMOTE_CMD=("$@")
+      break
+      ;;
+    -*) die 64 "Unknown flag: $1" ;;
+    *)
+      if [[ -z "$ROOM_CODE" ]]; then
+        ROOM_CODE="${1^^}" # normalize to uppercase
         shift
-        [[ $# -gt 0 ]] || die 64 "--device requires an argument (e.g. dmps, panel, hdps)"
-        DEVICE_FILTER="$1"
-        shift
-        ;;
-      --method)
-        shift
-        [[ $# -gt 0 ]] || die 64 "--method requires an argument (admin|crestron|telnet)"
-        case "$1" in
-          admin|crestron|telnet) METHOD="$1" ;;
-          *) die 64 "Unknown method '$1' — use admin, crestron, or telnet" ;;
-        esac
-        shift
-        ;;
-      --) shift; REMOTE_CMD=("$@"); break ;;
-      -*) die 64 "Unknown flag: $1" ;;
-      *)
-        if [[ -z "$ROOM_CODE" ]]; then
-          ROOM_CODE="${1^^}"  # normalize to uppercase
-          shift
-        else
-          die 64 "Unexpected argument: $1"
-        fi
-        ;;
+      else
+        die 64 "Unexpected argument: $1"
+      fi
+      ;;
     esac
   done
 
@@ -449,11 +496,14 @@ resolve_script() {
 
 check_deps() {
   if [[ -n "$ROOM_CODE" ]]; then
-    EMS_SCRIPT="$(resolve_script ems)" \
-      || die 69 "ems.sh (or ems) not found or not executable in ${SCRIPT_DIR}"
+    EMS_SCRIPT="$(resolve_script ems)" ||
+      die 69 "ems.sh (or ems) not found or not executable in ${SCRIPT_DIR}"
 
-    CONNECT_SCRIPT="$(resolve_script connect)" \
-      || die 69 "connect.sh (or connect) not found or not executable in ${SCRIPT_DIR}"
+    CONNECT_SCRIPT="$(resolve_script connect)" ||
+      die 69 "connect.sh (or connect) not found or not executable in ${SCRIPT_DIR}"
+
+    PROBE_SCRIPT="$(resolve_script probe)" ||
+      die 69 "probe.sh (or probe) not found or not executable in ${SCRIPT_DIR}"
   fi
 
   if ! command -v efficient &>/dev/null; then
@@ -462,12 +512,6 @@ check_deps() {
     else
       warn "efficient not in PATH — --refresh will not be available"
     fi
-  fi
-
-  # TCP port probing needs `timeout` to bound the connect() on filtered ports;
-  # without it we fall back to ICMP-only reachability.
-  if command -v timeout &>/dev/null; then
-    PORT_PROBE=true
   fi
 }
 
@@ -486,16 +530,16 @@ check_file_age() {
   file_date=$(grep -m1 '^# Exported: ' "$file" 2>/dev/null | awk '{print $3}')
 
   if [[ -n "$file_date" ]]; then
-    file_epoch=$(date -d "$file_date" +%s 2>/dev/null \
-      || date -j -f '%Y-%m-%d' "$file_date" +%s 2>/dev/null \
-      || echo 0)
+    file_epoch=$(date -d "$file_date" +%s 2>/dev/null ||
+      date -j -f '%Y-%m-%d' "$file_date" +%s 2>/dev/null ||
+      echo 0)
   else
     # No header — fall back to file mtime
     file_epoch=$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null || echo 0)
   fi
 
   today_epoch=$(date +%s)
-  age_days=$(( (today_epoch - file_epoch) / 86400 ))
+  age_days=$(((today_epoch - file_epoch) / 86400))
 
   info "${CYAN}Export : $(basename "$file") (${age_days} day(s) old)${NC}"
 
@@ -513,7 +557,7 @@ refresh_export() {
 
   # --no-pager is required: without it efficient pipes through less, which
   # opens /dev/tty directly and nothing is captured by the file redirect.
-  if ! efficient vlan show "$VLAN_NAME" --no-pager > "$tmpfile"; then
+  if ! efficient vlan show "$VLAN_NAME" --no-pager >"$tmpfile"; then
     warn "efficient exited non-zero — export may be incomplete"
     if [[ ! -s "$tmpfile" ]]; then
       rm -f "$tmpfile"
@@ -522,7 +566,10 @@ refresh_export() {
     fi
   fi
 
-  { echo "# Exported: $(date +%F)"; cat "$tmpfile"; } > "$outfile"
+  {
+    echo "# Exported: $(date +%F)"
+    cat "$tmpfile"
+  } >"$outfile"
   rm -f "$tmpfile"
 
   EXPORT_FILE="$outfile"
@@ -616,52 +663,29 @@ lookup_devices() {
 
 # --- REACHABILITY PROBE ---
 
-# Returns 0 if a TCP connection to ip:port opens within 1s. `timeout` bounds the
-# connect() so filtered ports (which never send RST) don't hang the probe.
-check_port() {
-  local ip="$1" port="$2"
-  timeout "$PROBE_TIMEOUT" bash -c "exec 3<>/dev/tcp/${ip}/${port}" 2>/dev/null
-}
-
-# Prints a single reachability status word for one IP:
-#   SSH     — port 22 open (connect.sh admin/crestron methods will reach it)
-#   TELNET  — port 41795 open (Crestron legacy console reachable)
-#   PING    — answers ICMP but no console port open (up but likely wedged)
-#   OFFLINE — no response
-# Falls back to ONLINE/OFFLINE (ICMP only) when `timeout` is unavailable.
-probe_one() {
-  local ip="$1"
-  if $PORT_PROBE; then
-    if check_port "$ip" "$SSH_PORT";    then echo "SSH";    return; fi
-    if check_port "$ip" "$TELNET_PORT"; then echo "TELNET"; return; fi
-    if ping -c 1 -W "$PROBE_TIMEOUT" "$ip" &>/dev/null; then echo "PING"; else echo "OFFLINE"; fi
-  else
-    if ping -c 1 -W "$PROBE_TIMEOUT" "$ip" &>/dev/null; then echo "ONLINE"; else echo "OFFLINE"; fi
-  fi
-}
-
 # Probes all IPs in DEVICE_IPS in parallel; populates DEVICE_STATUSES in order.
+# The probe itself lives in probe.sh, which is the one definition of
+# "reachable" shared by every script in this directory. It prints one
+# "<ip><TAB><status>" line per host in the order given, so the statuses line up
+# with DEVICE_IPS/DEVICE_LABELS by index. Status words are SSH/TELNET/PING/
+# OFFLINE, or ONLINE/OFFLINE when probe.sh has to fall back to ICMP only.
 probe_devices() {
   DEVICE_STATUSES=()
-  local tmpfiles=() pids=() i
+  [[ ${#DEVICE_IPS[@]} -eq 0 ]] && return 0
 
   info "${CYAN}Checking device availability...${NC}"
 
-  for (( i=0; i<${#DEVICE_IPS[@]}; i++ )); do
-    local tmp
-    tmp=$(mktemp)
-    tmpfiles+=("$tmp")
-    probe_one "${DEVICE_IPS[i]}" > "$tmp" &
-    pids+=($!)
-  done
+  # probe.sh exits 1 when any host is unreachable, which is normal here.
+  local status
+  while IFS=$'\t' read -r _ status; do
+    DEVICE_STATUSES+=("$status")
+  done < <("$PROBE_SCRIPT" --timeout "$PROBE_TIMEOUT" --ssh-port "$SSH_PORT" \
+    --telnet-port "$TELNET_PORT" "${DEVICE_IPS[@]}" || true)
 
-  for pid in "${pids[@]}"; do
-    wait "$pid" || true
-  done
-
-  for tmp in "${tmpfiles[@]}"; do
-    DEVICE_STATUSES+=("$(cat "$tmp")")
-    rm -f "$tmp"
+  # If probe.sh died early, pad the array so the per-device row printers don't
+  # index past its end under `set -u`.
+  while ((${#DEVICE_STATUSES[@]} < ${#DEVICE_IPS[@]})); do
+    DEVICE_STATUSES+=("OFFLINE")
   done
 }
 
@@ -674,9 +698,9 @@ divider() {
 # Sets REPLY to the color for a reachability status word.
 status_color() {
   case "$1" in
-    SSH|TELNET|ONLINE) REPLY="$GREEN" ;;
-    PING)              REPLY="$YELLOW" ;;
-    *)                 REPLY="$RED" ;;
+  SSH | TELNET | ONLINE) REPLY="$GREEN" ;;
+  PING) REPLY="$YELLOW" ;;
+  *) REPLY="$RED" ;;
   esac
 }
 
@@ -685,7 +709,8 @@ status_color() {
 print_device_row() {
   local i="$1" prefix="${2:-}"
   local status="${DEVICE_STATUSES[i]}" sc
-  status_color "$status"; sc="$REPLY"
+  status_color "$status"
+  sc="$REPLY"
   printf "%b%-12s  %-18s  %b%s%b\n" \
     "$prefix" "${DEVICE_LABELS[i]}" "${DEVICE_IPS[i]}" "$sc" "$status" "$NC" >&2
 }
@@ -704,33 +729,33 @@ handle_not_found() {
   read -rp "Choice [1-3]: " choice
 
   case "$choice" in
-    1)
-      if ! command -v efficient &>/dev/null; then
-        die 69 "efficient not found in PATH — cannot refresh"
-      fi
-      refresh_export
-      lookup_devices "$EXPORT_FILE" "$ROOM_CODE"
-      if [[ ${#DEVICE_IPS[@]} -eq 0 ]]; then
-        die "Still no devices found for '${ROOM_CODE}' after refresh"
-      fi
-      select_device
-      ;;
-    2)
-      local manual
-      read -rp "Enter hostname or IP: " manual
-      [[ -z "$manual" ]] && die "No target entered — aborting"
-      # Derive the label so is_panel/is_projector handling still applies to
-      # manually-entered hostnames (bare IPs yield an empty label).
-      label_from_host "$manual"
-      SELECTED_IP="$manual"
-      SELECTED_LABEL="$REPLY"
-      ;;
-    3|"")
-      die "Aborted"
-      ;;
-    *)
-      die "Invalid choice — aborting"
-      ;;
+  1)
+    if ! command -v efficient &>/dev/null; then
+      die 69 "efficient not found in PATH — cannot refresh"
+    fi
+    refresh_export
+    lookup_devices "$EXPORT_FILE" "$ROOM_CODE"
+    if [[ ${#DEVICE_IPS[@]} -eq 0 ]]; then
+      die "Still no devices found for '${ROOM_CODE}' after refresh"
+    fi
+    select_device
+    ;;
+  2)
+    local manual
+    read -rp "Enter hostname or IP: " manual
+    [[ -z "$manual" ]] && die "No target entered — aborting"
+    # Derive the label so is_panel/is_projector handling still applies to
+    # manually-entered hostnames (bare IPs yield an empty label).
+    label_from_host "$manual"
+    SELECTED_IP="$manual"
+    SELECTED_LABEL="$REPLY"
+    ;;
+  3 | "")
+    die "Aborted"
+    ;;
+  *)
+    die "Invalid choice — aborting"
+    ;;
   esac
 }
 
@@ -741,12 +766,18 @@ apply_device_filter() {
   local f="${DEVICE_FILTER^^}" i
   local ips=() labels=()
 
-  for (( i=0; i<${#DEVICE_LABELS[@]}; i++ )); do
-    [[ "${DEVICE_LABELS[i]^^}" == "$f" ]] && { ips+=("${DEVICE_IPS[i]}"); labels+=("${DEVICE_LABELS[i]}"); }
+  for ((i = 0; i < ${#DEVICE_LABELS[@]}; i++)); do
+    [[ "${DEVICE_LABELS[i]^^}" == "$f" ]] && {
+      ips+=("${DEVICE_IPS[i]}")
+      labels+=("${DEVICE_LABELS[i]}")
+    }
   done
   if [[ ${#ips[@]} -eq 0 ]]; then
-    for (( i=0; i<${#DEVICE_LABELS[@]}; i++ )); do
-      [[ "${DEVICE_LABELS[i]^^}" == "$f"* ]] && { ips+=("${DEVICE_IPS[i]}"); labels+=("${DEVICE_LABELS[i]}"); }
+    for ((i = 0; i < ${#DEVICE_LABELS[@]}; i++)); do
+      [[ "${DEVICE_LABELS[i]^^}" == "$f"* ]] && {
+        ips+=("${DEVICE_IPS[i]}")
+        labels+=("${DEVICE_LABELS[i]}")
+      }
     done
   fi
 
@@ -771,52 +802,12 @@ show_info() {
   info ""
   info "${BOLD}${count} device(s) for ${ROOM_CODE}:${NC}"
   local i
-  for (( i=0; i<count; i++ )); do
+  for ((i = 0; i < count; i++)); do
     print_device_row "$i" "  "
   done
 }
 
 # --- QUICK DIAGNOSTICS ---
-
-# Strips the trailing device-prompt line (e.g. "TSW-770>") and any blank
-# lines at the start/end of raw command output, so it prints tightly like
-# the other status sections.
-clean_diag_output() {
-  local text="$1"
-  text=$(sed -E '/^[A-Za-z0-9_.-]+>[[:space:]]*$/d' <<< "$text")
-  text=$(sed -e '/./,$!d' <<< "$text")
-  text=$(tac <<< "$text" | sed -e '/./,$!d' | tac)
-  printf '%s' "$text"
-}
-
-# Condenses a raw 'iptable -T' pipe-table into one colorized line per entry
-# (CIP id, type, status, port, site/IP, plus model/description only when
-# non-empty). Splits on '|' rather than column width, since the device pads
-# fields inconsistently. Prints nothing (and lets the caller fall back to
-# the raw text) if the input doesn't look like an iptable dump.
-condense_iptable() {
-  awk -F'|' -v red="$RED" -v green="$GREEN" -v yellow="$YELLOW" -v nc="$NC" '
-    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
-    /^-+$/ { next }
-    /CIP_ID/ { next }
-    /^[[:space:]]*IP Table:[[:space:]]*$/ { next }
-    NF < 6 { next }
-    {
-      id = trim($1); type = trim($2); status = trim($3); port = trim($5); site = trim($6);
-      model = (NF >= 7) ? trim($7) : "";
-      desc  = (NF >= 8) ? trim($8) : "";
-      if (id == "") next
-      color = nc
-      if (status == "ONLINE")       color = green
-      else if (status == "OFFLINE") color = red
-      else if (status != "")        color = yellow
-      line = sprintf("  CIP %-4s %-6s %s%-8s%s port=%-6s %s", id, type, color, status, nc, port, site)
-      if (model != "") line = line " [" model "]"
-      if (desc  != "") line = line " (" desc ")"
-      print line
-    }
-  '
-}
 
 # Runs DIAG_CMD (default 'iptable -T') on each SSH-reachable device whose
 # label matches DIAG_SSH_TYPES, in parallel. Populates DIAG_OUTPUTS in
@@ -825,13 +816,26 @@ probe_iptables() {
   DIAG_OUTPUTS=()
   local tmpfiles=() pids=() i t label matches
   local -a diag_cmd
-  read -ra diag_cmd <<< "$DIAG_CMD"
+  read -ra diag_cmd <<<"$DIAG_CMD"
 
-  for (( i=0; i<${#DEVICE_IPS[@]}; i++ )); do
+  # iptable_fmt.sh does the cleanup/condensing; its stdout is captured here,
+  # so pass our own color decision explicitly rather than letting it sniff
+  # the TTY. Missing helper degrades to the raw device output.
+  local fmt_script fmt_color="never"
+  [[ -n "$NC" ]] && fmt_color="always"
+  fmt_script="$(resolve_script iptable_fmt)" || {
+    warn "iptable_fmt.sh (or iptable_fmt) not found or not executable in ${SCRIPT_DIR} — showing raw output"
+    fmt_script=""
+  }
+
+  for ((i = 0; i < ${#DEVICE_IPS[@]}; i++)); do
     label="${DEVICE_LABELS[i]^^}"
     matches=false
     for t in $DIAG_SSH_TYPES; do
-      [[ "$label" == "${t^^}"* ]] && { matches=true; break; }
+      [[ "$label" == "${t^^}"* ]] && {
+        matches=true
+        break
+      }
     done
 
     if [[ "${DEVICE_STATUSES[i]}" != "SSH" || "$matches" != true ]]; then
@@ -845,7 +849,7 @@ probe_iptables() {
     tmpfiles+=("$f")
     (
       timeout "$DIAG_TIMEOUT" "$CONNECT_SCRIPT" "${DEVICE_IPS[i]}" -- "${diag_cmd[@]}" \
-        > "$f" 2>&1 || echo "[diag] command failed or timed out" >> "$f"
+        >"$f" 2>&1 || echo "[diag] command failed or timed out" >>"$f"
     ) &
     pids+=("$!")
   done
@@ -856,7 +860,11 @@ probe_iptables() {
 
   for f in "${tmpfiles[@]}"; do
     if [[ -n "$f" ]]; then
-      DIAG_OUTPUTS+=("$(clean_diag_output "$(cat "$f")")")
+      if [[ -n "$fmt_script" ]]; then
+        DIAG_OUTPUTS+=("$("$fmt_script" --color "$fmt_color" <"$f")")
+      else
+        DIAG_OUTPUTS+=("$(cat "$f")")
+      fi
       rm -f "$f"
     else
       DIAG_OUTPUTS+=("")
@@ -887,28 +895,28 @@ check_vc4_status() {
   set -e
 
   case $rc in
-    0)
-      # awk, not sed: sed's replacement text treats a leading "\0" (which
-      # $GREEN/$RED start with, as literal "\033...") as a whole-match
-      # backreference, mangling the color codes. awk's gsub has no such trap.
-      output=$(awk -v green="$GREEN" -v red="$RED" -v nc="$NC" '
+  0)
+    # awk, not sed: sed's replacement text treats a leading "\0" (which
+    # $GREEN/$RED start with, as literal "\033...") as a whole-match
+    # backreference, mangling the color codes. awk's gsub has no such trap.
+    output=$(awk -v green="$GREEN" -v red="$RED" -v nc="$NC" '
         { gsub(/\<ONLINE\>/, green "&" nc); gsub(/\<OFFLINE\>/, red "&" nc); print }
-      ' <<< "$output")
-      while IFS= read -r line; do info "  ${line}"; done <<< "$output"
-      ;;
-    1)
-      warn "VC-4: no devices found for room '${ROOM_CODE}'"
-      ;;
-    2)
-      warn "VC-4 check misconfigured (missing server/credentials — check pass entries crestron/vc4/host, work/username, work/password)"
-      ;;
-    124)
-      warn "VC-4 status check timed out after ${VC4_TIMEOUT}s"
-      ;;
-    *)
-      warn "VC-4 status check failed (exit ${rc})"
-      vecho "$output"
-      ;;
+      ' <<<"$output")
+    while IFS= read -r line; do info "  ${line}"; done <<<"$output"
+    ;;
+  1)
+    warn "VC-4: no devices found for room '${ROOM_CODE}'"
+    ;;
+  2)
+    warn "VC-4 check misconfigured (missing server/credentials — check pass entries crestron/vc4/host, work/username, work/password)"
+    ;;
+  124)
+    warn "VC-4 status check timed out after ${VC4_TIMEOUT}s"
+    ;;
+  *)
+    warn "VC-4 status check failed (exit ${rc})"
+    vecho "$output"
+    ;;
   esac
 }
 
@@ -932,7 +940,7 @@ check_hdps_web() {
   [[ -n "$NC" ]] && hdps_color="always"
 
   local i label output rc first=true
-  for (( i=0; i<${#DEVICE_LABELS[@]}; i++ )); do
+  for ((i = 0; i < ${#DEVICE_LABELS[@]}; i++)); do
     label="${DEVICE_LABELS[i]^^}"
     [[ "$label" == HDPS* ]] || continue
 
@@ -946,19 +954,19 @@ check_hdps_web() {
     set -e
 
     case $rc in
-      0)
-        while IFS= read -r line; do info "  ${line}"; done <<< "$output"
-        ;;
-      77)
-        warn "HD-PS status check misconfigured (missing credentials — check pass entries crestron/creds/username, crestron/creds/password)"
-        ;;
-      124)
-        warn "HD-PS status check timed out after ${HDPS_TIMEOUT}s"
-        ;;
-      *)
-        warn "HD-PS status check failed (exit ${rc})"
-        vecho "$output"
-        ;;
+    0)
+      while IFS= read -r line; do info "  ${line}"; done <<<"$output"
+      ;;
+    77)
+      warn "HD-PS status check misconfigured (missing credentials — check pass entries crestron/creds/username, crestron/creds/password)"
+      ;;
+    124)
+      warn "HD-PS status check timed out after ${HDPS_TIMEOUT}s"
+      ;;
+    *)
+      warn "HD-PS status check failed (exit ${rc})"
+      vecho "$output"
+      ;;
     esac
   done
 }
@@ -979,7 +987,7 @@ show_diagnostics() {
   info ""
   info "${BOLD}${count} device(s) for ${ROOM_CODE}:${NC}"
   local i
-  for (( i=0; i<count; i++ )); do
+  for ((i = 0; i < count; i++)); do
     print_device_row "$i" "  "
   done
 
@@ -988,21 +996,22 @@ show_diagnostics() {
   info "${CYAN}Running '${DIAG_CMD}' on reachable panel/HDPS devices...${NC}"
   probe_iptables
 
-  local condensed
-  for (( i=0; i<count; i++ )); do
+  for ((i = 0; i < count; i++)); do
     [[ -z "${DIAG_OUTPUTS[i]}" ]] && continue
     info ""
     info "${BOLD}${DEVICE_LABELS[i]} (${DEVICE_IPS[i]}) — ${DIAG_CMD}:${NC}"
-    condensed="$(condense_iptable <<< "${DIAG_OUTPUTS[i]}")"
     while IFS= read -r line; do
       info "  ${line}"
-    done <<< "${condensed:-${DIAG_OUTPUTS[i]}}"
+    done <<<"${DIAG_OUTPUTS[i]}"
   done
 
   local has_hdps=false label
-  for (( i=0; i<count; i++ )); do
+  for ((i = 0; i < count; i++)); do
     label="${DEVICE_LABELS[i]^^}"
-    [[ "$label" == HDPS* ]] && { has_hdps=true; break; }
+    [[ "$label" == HDPS* ]] && {
+      has_hdps=true
+      break
+    }
   done
 
   if $has_hdps; then
@@ -1062,8 +1071,8 @@ select_device() {
 
   info "${BOLD}Found ${count} device(s) for ${ROOM_CODE}:${NC}"
   local i
-  for (( i=0; i<count; i++ )); do
-    print_device_row "$i" "$(printf '  %b%d)%b ' "$CYAN" "$((i+1))" "$NC")"
+  for ((i = 0; i < count; i++)); do
+    print_device_row "$i" "$(printf '  %b%d)%b ' "$CYAN" "$((i + 1))" "$NC")"
   done
   info ""
 
@@ -1082,7 +1091,7 @@ select_device() {
     local indices=() valid=true
     declare -A _seen=()
     for token in $raw_choice; do
-      if [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= count )); then
+      if [[ "$token" =~ ^[0-9]+$ ]] && ((token >= 1 && token <= count)); then
         if [[ -z "${_seen[$token]+x}" ]]; then
           _seen[$token]=1
           indices+=("$token")
@@ -1100,12 +1109,12 @@ select_device() {
     fi
 
     if [[ ${#indices[@]} -eq 1 ]]; then
-      SELECTED_IP="${DEVICE_IPS[$((${indices[0]}-1))]}"
-      SELECTED_LABEL="${DEVICE_LABELS[$((${indices[0]}-1))]}"
+      SELECTED_IP="${DEVICE_IPS[$((${indices[0]} - 1))]}"
+      SELECTED_LABEL="${DEVICE_LABELS[$((${indices[0]} - 1))]}"
     else
       for token in "${indices[@]}"; do
-        SELECTED_IPS+=("${DEVICE_IPS[$((token-1))]}")
-        SELECTED_LABELS+=("${DEVICE_LABELS[$((token-1))]}")
+        SELECTED_IPS+=("${DEVICE_IPS[$((token - 1))]}")
+        SELECTED_LABELS+=("${DEVICE_LABELS[$((token - 1))]}")
       done
       MULTI=true
     fi
@@ -1165,16 +1174,16 @@ maybe_open_viewer() {
   read -rp "How would you like to connect? [1/2]: " choice
 
   case "${choice:-1}" in
-    1) return ;;  # fall through to do_connect
-    2)
-      info ""
-      info "${CYAN}----------------------------------------${NC}"
-      info "${CYAN}Opening viewer for ${ROOM_CODE} → ${SELECTED_IP}${NC}"
-      info "${CYAN}----------------------------------------${NC}"
-      log "CONNECT room=${ROOM_CODE} target=${SELECTED_IP} label=${SELECTED_LABEL:-?} method=viewer"
-      exec panelviewer "$SELECTED_IP"
-      ;;
-    *) warn "Invalid choice — defaulting to SSH" ;;
+  1) return ;; # fall through to do_connect
+  2)
+    info ""
+    info "${CYAN}----------------------------------------${NC}"
+    info "${CYAN}Opening viewer for ${ROOM_CODE} → ${SELECTED_IP}${NC}"
+    info "${CYAN}----------------------------------------${NC}"
+    log "CONNECT room=${ROOM_CODE} target=${SELECTED_IP} label=${SELECTED_LABEL:-?} method=viewer"
+    exec panelviewer "$SELECTED_IP"
+    ;;
+  *) warn "Invalid choice — defaulting to SSH" ;;
   esac
 }
 
@@ -1189,8 +1198,8 @@ do_connect() {
   info "${CYAN}----------------------------------------${NC}"
 
   local connect_args=()
-  $VERBOSE             && connect_args+=("-v")
-  [[ -n "$METHOD" ]]   && connect_args+=("--method" "$METHOD")
+  $VERBOSE && connect_args+=("-v")
+  [[ -n "$METHOD" ]] && connect_args+=("--method" "$METHOD")
   connect_args+=("$target")
   if [[ ${#REMOTE_CMD[@]} -gt 0 ]]; then
     connect_args+=("--" "${REMOTE_CMD[@]}")
@@ -1205,7 +1214,7 @@ do_connect() {
 build_connect_cmd() {
   local ip="$1"
   local parts=("$CONNECT_SCRIPT")
-  $VERBOSE           && parts+=("-v")
+  $VERBOSE && parts+=("-v")
   [[ -n "$METHOD" ]] && parts+=("--method" "$METHOD")
   parts+=("$ip")
   [[ ${#REMOTE_CMD[@]} -gt 0 ]] && parts+=("--" "${REMOTE_CMD[@]}")
@@ -1220,15 +1229,15 @@ open_tmux_session() {
 
   # Projectors have no SSH; skip them in multi mode
   local ssh_ips=() ssh_labels=() i
-  for (( i=0; i<${#SELECTED_IPS[@]}; i++ )); do
+  for ((i = 0; i < ${#SELECTED_IPS[@]}; i++)); do
     case "${SELECTED_LABELS[i]^^}" in
-      PROJ*)
-        warn "Skipping ${SELECTED_LABELS[i]} (${SELECTED_IPS[i]}) — projectors have no SSH"
-        ;;
-      *)
-        ssh_ips+=("${SELECTED_IPS[i]}")
-        ssh_labels+=("${SELECTED_LABELS[i]}")
-        ;;
+    PROJ*)
+      warn "Skipping ${SELECTED_LABELS[i]} (${SELECTED_IPS[i]}) — projectors have no SSH"
+      ;;
+    *)
+      ssh_ips+=("${SELECTED_IPS[i]}")
+      ssh_labels+=("${SELECTED_LABELS[i]}")
+      ;;
     esac
   done
 
@@ -1262,7 +1271,7 @@ open_tmux_session() {
   tmux set-option -t "$target" pane-border-status top
   tmux select-pane -t "$target" -T "${ssh_labels[0]} ${ssh_ips[0]}"
 
-  for (( i=1; i<${#ssh_ips[@]}; i++ )); do
+  for ((i = 1; i < ${#ssh_ips[@]}; i++)); do
     ci=$(build_connect_cmd "${ssh_ips[i]}")
     tmux split-window -t "$target" "$ci"
     tmux select-pane -t "$target" -T "${ssh_labels[i]} ${ssh_ips[i]}"
