@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+set -o errexit
+set -o nounset
+set -o pipefail
+
+# wallpaper-triage [--all] [-k|--auto-keep-renamed]
+#
+# Steps through the images in ~/Pictures/Wallpapers (sorted by name, same set
+# as dwl-wallpaper), showing each one with swaybg, and asks whether to keep or
+# archive it. Archived files are moved to ../wallpaper-archive, keeping their
+# subdirectory so names can't collide. Kept files are remembered in
+# $XDG_STATE_HOME/wallpaper-triage so a later run resumes where you left off;
+# pass --all to review everything again. With -k/--auto-keep-renamed, renaming
+# an image also keeps it and moves on.
+#
+# Keys: k keep, a archive, r rename, s skip (decide later), u undo last,
+# q quit.
+
+all=0
+auto_keep=0
+for arg in "$@"; do
+  case "$arg" in
+    --all) all=1 ;;
+    -k | --auto-keep-renamed) auto_keep=1 ;;
+    *)
+      echo "usage: wallpaper-triage [--all] [-k|--auto-keep-renamed]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+dir="${DWL_WALLPAPER_DIR:-$HOME/Pictures/Wallpapers}"
+dwl_state="${XDG_STATE_HOME:-$HOME/.local/state}/dwl-wallpaper"
+archive="$(dirname "$dir")/wallpaper-archive"
+kept="${XDG_STATE_HOME:-$HOME/.local/state}/wallpaper-triage"
+
+# swaybg usually isn't on PATH (dwl-wallpaper bakes in its own store path), so
+# fall back to nixpkgs' copy; after the first build this is just a cache hit.
+swaybg=$(command -v swaybg || true)
+if [ -z "$swaybg" ]; then
+  echo "wallpaper-triage: swaybg not on PATH, fetching it from nixpkgs..." >&2
+  swaybg="$(nix build --no-link --print-out-paths nixpkgs#swaybg)/bin/swaybg"
+fi
+[ -x "$swaybg" ] || {
+  echo "wallpaper-triage: can't find swaybg" >&2
+  exit 1
+}
+
+mkdir -p "$archive" "$(dirname "$kept")"
+touch "$kept"
+[ "$all" -eq 1 ] && : >"$kept"
+
+mapfile -d '' files < <(
+  find -L "$dir" -type f \
+    \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) \
+    -print0 | sort -z
+)
+
+declare -A seen=()
+while IFS= read -r f; do seen[$f]=1; done <"$kept"
+
+todo=()
+for f in "${files[@]}"; do
+  [ -z "${seen[$f]:-}" ] && todo+=("$f")
+done
+n=${#todo[@]}
+if [ "$n" -eq 0 ]; then
+  echo "wallpaper-triage: nothing left to review in $dir (use --all to start over)"
+  exit 0
+fi
+
+# Same trick as dwl-wallpaper: start the new swaybg, then kill the old ones.
+show() {
+  local old
+  mapfile -t old < <(pgrep -u "$(id -u)" -f '(^|/)\.?swaybg(-wrapped)? -m fill' || true)
+  setsid "$swaybg" -m fill -i "$1" >/dev/null 2>&1 &
+  sleep 0.3
+  [ "${#old[@]}" -gt 0 ] && kill "${old[@]}" 2>/dev/null || true
+}
+
+# Rename a wallpaper, keeping dwl-wallpaper's remembered file in step so
+# `restore` still finds it.
+move() {
+  mv -n -- "$1" "$2"
+  if [ -r "$dwl_state" ] && [ "$(<"$dwl_state")" = "$1" ]; then
+    printf '%s\n' "$2" >"$dwl_state"
+  fi
+}
+
+# Put the user's actual wallpaper back when we're done.
+trap 'command -v dwl-wallpaper >/dev/null && dwl-wallpaper restore || true' EXIT
+
+# Undo stack of "keep|<file>", "skip|<file>", "archive|<file>|<archived path>"
+# or "rename|<old path>|<new path>" (or "rename-keep|..." when -k kept it too).
+history=()
+kept_n=0
+archived_n=0
+i=0
+while true; do
+  if [ "$i" -ge "$n" ]; then
+    # Past the last image: one last chance to undo before finishing.
+    printf '\r\033[Kall done  (u)ndo or any other key to finish: '
+    read -rsn1 key || key=
+    case "$key" in
+      u | U) ;;
+      *)
+        echo
+        break
+        ;;
+    esac
+  else
+    f=${todo[$i]}
+    rel=${f#"$dir"/}
+    # Don't restart swaybg when we're still on the same image (e.g. after a
+    # cancelled rename).
+    [ "$f" != "${shown:-}" ] && show "$f" && shown=$f
+    printf '\r\033[K[%d/%d] %s  (k)eep (a)rchive (r)ename (s)kip (u)ndo (q)uit: ' \
+      "$((i + 1))" "$n" "$rel"
+    read -rsn1 key
+  fi
+  case "$key" in
+    k | K)
+      printf '%s\n' "$f" >>"$kept"
+      history+=("keep|$f")
+      kept_n=$((kept_n + 1))
+      echo "kept"
+      i=$((i + 1))
+      ;;
+    a | A)
+      dest="$archive/$rel"
+      mkdir -p "$(dirname "$dest")"
+      mv -n -- "$f" "$dest"
+      history+=("archive|$f|$dest")
+      archived_n=$((archived_n + 1))
+      echo "archived"
+      i=$((i + 1))
+      ;;
+    r | R)
+      name=${rel##*/}
+      ext=${name##*.}
+      # Only the name is edited; the extension always stays as it was, so the
+      # file never ends up labelled as the wrong image type.
+      printf '\r\033[K'
+      if ! read -rei "${name%.*}" -p "rename to (.$ext): " new; then
+        echo
+        continue
+      fi
+      # Drop an extension typed out of habit rather than doubling it up.
+      [[ "${new,,}" =~ \.(png|jpe?g|webp)$ ]] && new=${new%.*}
+      if [ -z "$new" ] || [ "$new.$ext" = "$name" ]; then
+        echo "unchanged"
+        continue
+      fi
+      case "$new" in
+        */* | *'|'*)
+          echo "names can't contain / or |"
+          continue
+          ;;
+      esac
+      new="$new.$ext"
+      dest="$(dirname "$f")/$new"
+      if [ -e "$dest" ]; then
+        echo "$new already exists"
+        continue
+      fi
+      move "$f" "$dest"
+      todo[i]=$dest
+      if [ "$auto_keep" -eq 1 ]; then
+        printf '%s\n' "$dest" >>"$kept"
+        history+=("rename-keep|$f|$dest")
+        kept_n=$((kept_n + 1))
+        echo "renamed to $new, kept"
+        i=$((i + 1))
+      else
+        history+=("rename|$f|$dest")
+        echo "renamed to $new"
+      fi
+      ;;
+    s | S)
+      history+=("skip|$f")
+      echo "skipped"
+      i=$((i + 1))
+      ;;
+    u | U)
+      if [ "${#history[@]}" -eq 0 ]; then
+        echo "nothing to undo"
+        continue
+      fi
+      last=${history[-1]}
+      unset 'history[-1]'
+      IFS='|' read -r action src dest <<<"$last"
+      case "$action" in
+        keep)
+          # Drop the last line of the kept list.
+          sed -i '$d' "$kept"
+          kept_n=$((kept_n - 1))
+          i=$((i - 1))
+          ;;
+        skip) i=$((i - 1)) ;;
+        archive)
+          mv -n -- "$dest" "$src"
+          archived_n=$((archived_n - 1))
+          i=$((i - 1))
+          ;;
+        rename)
+          # Renaming doesn't advance, so stay on this image.
+          move "$dest" "$src"
+          todo[i]=$src
+          ;;
+        rename-keep)
+          sed -i '$d' "$kept"
+          kept_n=$((kept_n - 1))
+          i=$((i - 1))
+          move "$dest" "$src"
+          todo[i]=$src
+          ;;
+      esac
+      echo "undid $action"
+      ;;
+    q | Q)
+      echo "quit"
+      break
+      ;;
+    *) echo ;;
+  esac
+done
+
+echo "kept $kept_n, archived $archived_n"
