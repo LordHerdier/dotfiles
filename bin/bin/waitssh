@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# waitssh — poll a host's SSH port until it's open, then connect.
+#
+# Usage: waitssh [-p port] [-i seconds] <host> [-- ssh-args...]
+
+set -euo pipefail
+
+PORT=22
+INTERVAL=2
+HOST=""
+SSH_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--port)     PORT="$2"; shift 2 ;;
+    -i|--interval) INTERVAL="$2"; shift 2 ;;
+    -h|--help)
+      echo "Usage: $(basename "$0") [-p port] [-i seconds] <host> [-- ssh-args...]" >&2
+      exit 0
+      ;;
+    --) shift; SSH_ARGS=("$@"); break ;;
+    *)
+      if [[ -z "$HOST" ]]; then
+        HOST="$1"; shift
+      else
+        echo "Error: Unexpected argument: $1" >&2
+        exit 64
+      fi
+      ;;
+  esac
+done
+
+if [[ -z "$HOST" ]]; then
+  echo "Error: No host provided." >&2
+  exit 64
+fi
+
+echo "Waiting for ${HOST}:${PORT} to open..." >&2
+until timeout 2 bash -c ">/dev/tcp/${HOST}/${PORT}" 2>/dev/null; do
+  sleep "$INTERVAL"
+done
+
+echo "Port open — connecting." >&2
+exec ssh -p "$PORT" "${SSH_ARGS[@]}" "$HOST"

@@ -1,0 +1,28 @@
+#!/usr/bin/env zsh
+# Per-program CPU/memory usage, grouped by executable, nix store paths stripped.
+# Usage: procusage.zsh [-c] [-n COUNT]   (-c sorts by CPU instead of memory)
+
+sortcol=3 count=25
+while getopts "cn:" opt; do
+  case $opt in
+    c) sortcol=2 ;;
+    n) count=$OPTARG ;;
+    *) print -u2 "usage: ${0:t} [-c] [-n COUNT]"; exit 1 ;;
+  esac
+done
+
+ps -eo rss=,pcpu=,args= --no-headers | awk -v col=$sortcol '
+{
+  rss = $1; cpu = $2; exe = $3
+  # strip /nix/store/<hash>-<name>/.../ down to the basename
+  sub(/^\/nix\/store\/[a-z0-9]+-[^\/]+\//, "", exe)
+  n = split(exe, parts, "/"); exe = parts[n]
+  # wrapped programs show up as .foo-wrapped
+  gsub(/^[.-]/, "", exe); sub(/-wrapped$/, "", exe)
+  mem[exe] += rss; c[exe] += cpu; procs[exe]++
+}
+END {
+  for (e in mem) printf "%s\t%.1f\t%.1f\t%d\n", e, c[e], mem[e] / 1024, procs[e]
+}' | sort -t$'\t' -k${sortcol},${sortcol}nr | head -n $count |
+  awk -F'\t' 'BEGIN { printf "%-28s %7s %10s %6s\n", "PROGRAM", "CPU%", "MEM(MiB)", "PROCS" }
+              { printf "%-28s %7s %10s %6s\n", $1, $2, $3, $4 }'
